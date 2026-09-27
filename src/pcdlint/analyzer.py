@@ -1,6 +1,7 @@
 """Code analyzer that scans Python files and produces diagnostics."""
 
 import ast
+import os
 from pathlib import Path
 from typing import List, Set
 
@@ -14,21 +15,29 @@ SKIP_DIRS: Set[str] = {".venv", "venv", "node_modules", ".git", "__pycache__", "
 def _run_engine(tracker: TaintTracker, tree: ast.AST, file_path: str) -> List[Diagnostic]:
     engine = RuleEngine(tracker)
     engine._file_path = file_path
+    engine.prepare(tree)
     for node in ast.walk(tree):
         engine.check_node(node)
     return engine._diagnostics
 
 
-def _find_shuffled_vars(tree: ast.AST, tracker: TaintTracker) -> None:
+def _find_if_mutations(tree: ast.AST, tracker: TaintTracker) -> None:
+    """Find variables mutated inside if/else branches (e.g. tools.append(...) inside ast.If)."""
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    var_name = target.id
-                    if isinstance(node.value, ast.Call):
-                        if (isinstance(node.value.func, ast.Attribute) and node.value.func.attr == "shuffle"
-                                and isinstance(node.value.func.value, ast.Name) and node.value.func.value.id == "random"):
-                            tracker._shuffled_vars.add(var_name)
+        if isinstance(node, ast.If):
+            for stmt in node.body + node.orelse:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+                        if sub.func.attr in ("append", "extend", "insert") and isinstance(sub.func.value, ast.Name):
+                            tracker._tools_mutated_vars.add(sub.func.value.id)
+                    elif isinstance(sub, ast.AugAssign) and isinstance(sub.target, ast.Name):
+                        tracker._tools_mutated_vars.add(sub.target.id)
+                    elif isinstance(sub, ast.Assign):
+                        for t in sub.targets:
+                            if isinstance(t, ast.Name) and t.id == "tools":
+                                tracker._tools_mutated_vars.add(t.id)
+                    elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name) and sub.target.id == "tools":
+                        tracker._tools_mutated_vars.add(sub.target.id)
 
 
 def analyze_code(source_code: str, file_path: str = "") -> List[Diagnostic]:
@@ -38,10 +47,12 @@ def analyze_code(source_code: str, file_path: str = "") -> List[Diagnostic]:
         return []
 
     tracker = TaintTracker()
-    _find_shuffled_vars(tree, tracker)
+    _find_if_mutations(tree, tracker)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
             tracker.track_assignment(node)
+        elif isinstance(node, ast.AugAssign):
+            tracker.track_aug_assign(node)
         elif isinstance(node, ast.Expr):
             tracker.track_expr_stmt(node)
 
@@ -61,27 +72,20 @@ def analyze_path(target_path: Path) -> List[Diagnostic]:
     all_diagnostics: List[Diagnostic] = []
 
     if target_path.is_file() and target_path.suffix == ".py":
-        source = target_path.read_text()
+        source = target_path.read_text(encoding="utf-8")
         diags = analyze_code(source, str(target_path))
         all_diagnostics.extend(diags)
     elif target_path.is_dir():
-        for root, dirs, files in Path(target_path).walk():
+        for root, dirs, files in os.walk(str(target_path)):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for fname in files:
                 if fname.endswith(".py"):
-                    fpath = root / fname
+                    fpath = Path(root) / fname
                     try:
-                        source = fpath.read_text()
+                        source = fpath.read_text(encoding="utf-8")
                         diags = analyze_code(source, str(fpath))
                         all_diagnostics.extend(diags)
                     except (OSError, UnicodeDecodeError):
                         continue
     return all_diagnostics
 
-
-def _is_file_read(node: ast.Call) -> bool:
-    if isinstance(node, ast.Call):
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr in ("read", "read_text"):
-                return True
-    return False

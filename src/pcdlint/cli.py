@@ -12,6 +12,14 @@ from pcdlint import __version__
 
 
 def main() -> int:
+    # Ensure UTF-8 output encoding across platforms (prevent Windows charmap/cp1252 errors)
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         prog="pcdlint",
         description="Static Taint Linter for Prompt-Cache Determinism",
@@ -92,7 +100,7 @@ def _print_text(diagnostics: list) -> None:
             f"[{severity_color}][{d.rule_id}] {d.rule_name}[/{severity_color}] "
             f"[bold]{d.file_path}:{d.lineno}:{d.col_offset}[/bold] - {d.message}"
         )
-        console.print(f"    [dim]Fix:[/dim] {d.fix_suggestion}")
+        console.print(f"    [bold yellow]💡 Fix:[/bold yellow] {d.fix_suggestion}")
         console.print()
     table = Table(title="Summary")
     table.add_column("Metric", style="cyan")
