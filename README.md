@@ -67,7 +67,7 @@ client.chat.completions.create(
 ## Installation
 
 ```bash
-pip install prompt-cache-lint
+pip install pcdlint
 ```
 
 Or install from source with dev dependencies:
@@ -105,7 +105,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install prompt-cache-lint
+      - run: pip install pcdlint
       - run: pcdlint check src/ --fail-on-warn
 ```
 
