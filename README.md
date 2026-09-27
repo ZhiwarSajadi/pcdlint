@@ -90,7 +90,22 @@ pcdlint check src/ --format json
 
 # Fail on warnings (useful for CI)
 pcdlint check src/ --fail-on-warn
+
+# Equivalent module forms (no console script needed)
+python -m pcdlint check src/
+python -m pclint check src/
 ```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | No findings |
+| `1` | Findings at ERROR severity, or any WARNING when `--fail-on-warn` is set |
+| `2` | A path could not be analyzed: missing, not a `.py` file, not valid UTF-8, or a syntax error |
+
+Exit code `2` exists so a typo'd path or a broken file can never look like a clean run
+in CI. Errors are printed to stderr; `--format json` output on stdout stays valid JSON.
 
 ## GitHub Actions CI Integration
 

@@ -1,6 +1,6 @@
 """Data model structures for pcdlint diagnostics and taint tracking."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

@@ -33,11 +33,19 @@ echo.
 echo [3/5] Installing package with dev dependencies...
 pip install --upgrade pip -q
 pip install -e ".[dev]" -q
+if errorlevel 1 (
+    echo ERROR: installation failed.
+    exit /b 1
+)
 echo   Installation complete.
 
 echo.
 echo [4/5] Running test suite...
 python -m pytest -v
+if errorlevel 1 (
+    echo ERROR: test suite failed.
+    exit /b 1
+)
 
 echo.
 echo [5/5] Running verification on demo files...
@@ -52,6 +60,10 @@ if errorlevel 1 (
 echo.
 echo --- Testing Buggy Case (demo_buggy.py) ---
 python -m pcdlint.cli check demo_buggy.py
+if not errorlevel 1 (
+    echo ERROR: demo_buggy.py should report violations and exit with code 1.
+    exit /b 1
+)
 
 echo.
 echo ==================================================

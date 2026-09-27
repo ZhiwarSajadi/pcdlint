@@ -55,35 +55,45 @@ pcdlint check demo_buggy.py   # Buggy case (triggers PCL001-PCL004)
 Target File/Directory
         │
         ▼
-pcdlint.analyzer.analyze_path / analyze_code
+pcdlint.analyzer.analyze_path(_ex) / analyze_code(_ex)
         │
-        ├─► AST Parsing (ast.parse)
+        ├─► AST Parsing (ast.parse) — a SyntaxError is reported, never swallowed
         │
         ├─► pcdlint.taint.TaintTracker
         │     - Detects non-deterministic sources (datetime, uuid, random, secrets, os.urandom)
-        │     - Tracks taint propagation through assignments, f-strings, concatenation, and str/method casts
-        │     - Identifies static prefix solids (constants, uppercase vars, strings >= 200 chars)
-        │     - Tracks sets and dynamic tool list mutations across branches
+        │     - Assigns every node a lexical scope; bindings are keyed (scope, name) and
+        │       strong-updated on reassignment, so one function's `system` never bleeds
+        │       into another's
+        │     - Tracks taint propagation through assignments, f-strings, concatenation,
+        │       .format()/str() casts, join(), and local-function return values
+        │     - Identifies static prefix solids (string constants, repeated strings
+        │       such as "rules " * 30, uppercase vars) at >= 200 chars
+        │     - Tracks sets, conditional (branch) construction, and tool list mutations
         │
-        ├─► pcdlint.rules.RuleEngine
-        │     - Pre-scans for prompt variables and LLM sink calls
-        │     - Evaluates AST nodes against 4 lint rules
+        ├─► pcdlint.rules.RuleEngine.run(tree, file_path)
+        │     - Pre-scans for variables that reach an LLM sink call
+        │     - Evaluates AST nodes against 4 lint rules (source-order walk)
         │
         ▼
 Deduplicated Diagnostics (sorted by file, lineno, col_offset)
         │
         ▼
-pcdlint.cli (Text via Rich table or JSON formatting, exit code 0 or 1)
+pcdlint.cli (Rich text or JSON on stdout, errors on stderr)
+        exit 0 = clean, 1 = findings (ERROR, or WARNING with --fail-on-warn),
+        2 = a path could not be analyzed
 ```
+
+Tests live in `tests/test_pcdlint.py` (rules/CLI), `tests/test_pclint.py` (alias package)
+and `tests/test_hardening.py` (regression + robustness cases).
 
 ### Rule System
 
 | Rule ID | Rule Name | Severity | Detection Target |
 |---------|-----------|----------|------------------|
-| `PCL001` | `prefix-taint-injection` | ERROR | Dynamic value placed before static prompt text in LLM `system` param or `messages` prefix (supports Anthropic content blocks & `cache_control`) |
-| `PCL002` | `unsorted-json-in-prefix` | WARNING | `json.dumps()` without `sort_keys=True` flowing into prompt or LLM call |
+| `PCL001` | `prefix-taint-injection` | ERROR | Dynamic value placed before static prompt text in LLM `system` param or `messages`/`input` prefix (supports Anthropic content blocks, `cache_control` breakpoints, and positional args) |
+| `PCL002` | `unsorted-json-in-prefix` | WARNING | `json.dumps()` without `sort_keys=True` whose result reaches a prompt or LLM call (tracked through intermediate variables) |
 | `PCL003` | `set-iteration-in-prompt` | ERROR | Unsorted sets in `.join()`, `str()`, or f-string interpolations |
-| `PCL004` | `dynamic-tools-mutation` | WARNING | `tools` parameter altered conditionally in if/else, shuffled, or initialized from an unordered set |
+| `PCL004` | `dynamic-tools-mutation` | WARNING | `tools` parameter altered conditionally in if/else, shuffled, built from an unordered set, or assembled from a branch-assigned helper |
 
 ### Package Structure & Aliases
 - `src/pcdlint/`: Primary implementation containing `analyzer.py`, `taint.py`, `rules.py`, `models.py`, `cli.py`.

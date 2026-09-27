@@ -73,3 +73,34 @@ def test_pclint_rules_and_taint_alias() -> None:
     engine = pclint.rules.RuleEngine(tracker)
     assert engine.tracker is tracker
 
+
+def test_python_dash_m_pclint_module() -> None:
+    """``python -m pclint`` runs like ``python -m pcdlint``."""
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pclint", "--version"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "pcdlint" in result.stdout
+
+
+def test_taint_origin_records_variable_name() -> None:
+    """TaintOrigin.variable_name names the bound variable instead of staying empty."""
+    import ast
+
+    from pcdlint.taint import TaintTracker
+
+    tree = ast.parse('from datetime import datetime\nts = datetime.now()\n')
+    tracker = TaintTracker()
+    tracker.build_scopes(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            tracker.track_assignment(node)
+
+    origin = tracker.tainted_vars["ts"]
+    assert origin.source_call == "datetime.now"
+    assert origin.variable_name == "ts"
+

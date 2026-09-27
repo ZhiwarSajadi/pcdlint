@@ -7,7 +7,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from pcdlint.analyzer import analyze_path
+from pcdlint.analyzer import analyze_path_ex
 from pcdlint import __version__
 
 
@@ -23,6 +23,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="pcdlint",
         description="Static Taint Linter for Prompt-Cache Determinism",
+        epilog="Exit codes: 0 = clean, 1 = findings (add --fail-on-warn to fail on "
+               "warnings), 2 = a path could not be analyzed (missing, not Python, "
+               "undecodable, or unparseable).",
     )
     parser.add_argument("paths", nargs="*", help="File or directory paths to check")
     parser.add_argument(
@@ -50,17 +53,26 @@ def main() -> int:
             raw_paths = ["."]
 
     all_diagnostics = []
+    all_errors = []
     for path_str in raw_paths:
         path = Path(path_str)
-        diags = analyze_path(path)
+        diags, errors = analyze_path_ex(path)
         all_diagnostics.extend(diags)
+        all_errors.extend(errors)
 
     all_diagnostics.sort(key=lambda d: (d.file_path, d.lineno, d.col_offset))
 
     if args.format == "json":
         _print_json(all_diagnostics)
-    else:
+    elif all_diagnostics or not all_errors:
         _print_text(all_diagnostics)
+
+    # A path we could not analyze must never look clean, so report it loudly.
+    for message in all_errors:
+        print(f"pcdlint: error: {message}", file=sys.stderr)
+
+    if all_errors:
+        return 2
 
     has_errors = any(d.severity == "ERROR" for d in all_diagnostics)
     has_warnings = any(d.severity == "WARNING" for d in all_diagnostics)
