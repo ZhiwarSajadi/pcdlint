@@ -39,9 +39,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pcdlint/pcdlint"
-Repository = "https://github.com/pcdlint/pcdlint"
-Issues = "https://github.com/pcdlint/pcdlint/issues"
+Homepage = "https://github.com/ZhiwarSajadi/pcdlint"
+Repository = "https://github.com/ZhiwarSajadi/pcdlint"
+Issues = "https://github.com/ZhiwarSajadi/pcdlint/issues"
 
 [project.optional-dependencies]
 dev = [

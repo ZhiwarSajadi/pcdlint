@@ -1,6 +1,6 @@
 # pcdlint (Prompt-Cache Determinism Linter)
 
-[![CI Status](https://github.com/pcdlint/pcdlint/workflows/CI/badge.svg)](https://github.com/pcdlint/pcdlint/actions)
+[![CI Status](https://github.com/ZhiwarSajadi/pcdlint/workflows/CI/badge.svg)](https://github.com/ZhiwarSajadi/pcdlint/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://opensource.org/licenses/MIT)
 
