@@ -20,14 +20,26 @@ from pcdlint.rules import KNOWN_RULE_IDS, RULE_SEVERITIES, RULE_SHORT_DESCRIPTIO
 _REPO_URL = "https://github.com/ZhiwarSajadi/pcdlint"
 
 
+def _parse_excludes(values: list[str] | None) -> frozenset | None:
+    """Repeatable ``--exclude`` globs; None when the flag was not given.
+
+    No comma splitting: a glob is allowed to contain a comma, and unlike a
+    rule id it needs no validation.
+    """
+    if not values:
+        return None
+    return frozenset(v.strip() for v in values if v.strip())
+
+
 def _analyze_paths(paths: list, select: frozenset | None,
-                   ignore: frozenset | None) -> tuple[list, list[str]]:
+                   ignore: frozenset | None,
+                   exclude: frozenset | None = None) -> tuple[list, list[str]]:
     """Analyze every path, keeping diagnostics and blocking errors apart."""
     diagnostics: list = []
     errors: list[str] = []
     for path_str in paths:
         found, path_errors = analyze_path_ex(Path(path_str), select=select,
-                                             ignore=ignore)
+                                             ignore=ignore, exclude=exclude)
         diagnostics.extend(found)
         errors.extend(path_errors)
     return diagnostics, errors
@@ -253,6 +265,12 @@ def main() -> int:
              "[tool.pcdlint] ignore",
     )
     parser.add_argument(
+        "--exclude", action="append", metavar="GLOBS", default=None,
+        help="Glob of files to leave out of the scan, bare name or path "
+             "relative to what you passed (repeatable); overrides "
+             "[tool.pcdlint] exclude",
+    )
+    parser.add_argument(
         "--diff", nargs="?", const="HEAD", default=None, metavar="REF",
         help="Only report findings whose own line the working tree changed "
              "since REF in git (default: HEAD). A finding on an untouched "
@@ -273,6 +291,7 @@ def main() -> int:
     except config.ConfigError as exc:
         print(f"pcdlint: error: {exc}", file=sys.stderr)
         return 2
+    exclude = _parse_excludes(args.exclude)
 
     if not args.paths:
         parser.print_help()
@@ -288,7 +307,8 @@ def main() -> int:
         if not raw_paths:
             raw_paths = ["."]
 
-    all_diagnostics, all_errors = _analyze_paths(raw_paths, select, ignore)
+    all_diagnostics, all_errors = _analyze_paths(raw_paths, select, ignore,
+                                                 exclude)
 
     if args.diff is not None:
         # Before --fix: PR CI wants only the lines a change introduced fixed.
@@ -302,7 +322,8 @@ def main() -> int:
         if changed:
             # Re-read so the report and the exit code describe what is on
             # disk now, not what was there before the rewrite.
-            all_diagnostics, recheck_errors = _analyze_paths(raw_paths, select, ignore)
+            all_diagnostics, recheck_errors = _analyze_paths(
+                raw_paths, select, ignore, exclude)
             all_errors.extend(recheck_errors)
             if args.diff is not None:
                 # The rewrite re-analysed every file, so the filter has to be

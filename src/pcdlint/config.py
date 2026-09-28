@@ -21,7 +21,7 @@ else:  # Python 3.10 has no tomllib; tomli is its backport.
     import tomli as tomllib
 
 _SECTION = "tool.pcdlint"
-_KEYS = frozenset({"select", "ignore"})
+_KEYS = frozenset({"select", "ignore", "exclude"})
 
 
 class ConfigError(Exception):
@@ -35,6 +35,8 @@ class Config:
     # None means "every rule"; a frozenset is an allowlist.
     select: frozenset | None = None
     ignore: frozenset = field(default_factory=frozenset)
+    # Globs for files this project does not want scanned at all.
+    exclude: frozenset = field(default_factory=frozenset)
 
 
 DEFAULT = Config()
@@ -70,6 +72,15 @@ def _rule_ids(value: object, key: str, path: Path, *,
     return ids
 
 
+def _globs(value: object, key: str, path: Path) -> frozenset:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ConfigError(
+            f"{_SECTION} {key} in {path} must be a list of globs, got {value!r}"
+        )
+    # Empty entries would match nothing useful and are a typo, so they go.
+    return frozenset(pattern for pattern in value if pattern.strip())
+
+
 def _load(path: Path) -> tuple[Config | None, bool]:
     """Parse one pyproject.toml; ``(config, found)`` with found=False when it
     declares no [tool.pcdlint] section."""
@@ -100,7 +111,9 @@ def _load(path: Path) -> tuple[Config | None, bool]:
     select = _rule_ids(section["select"], "select", path) if "select" in section else None
     ignore = (_rule_ids(section["ignore"], "ignore", path, allow_empty=True)
               if "ignore" in section else frozenset())
-    return Config(select=select, ignore=ignore), True
+    exclude = (_globs(section["exclude"], "exclude", path)
+               if "exclude" in section else frozenset())
+    return Config(select=select, ignore=ignore, exclude=exclude), True
 
 
 @cache

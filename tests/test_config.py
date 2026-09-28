@@ -230,3 +230,79 @@ def test_a_broken_config_still_fails_every_call(tmp_path) -> None:
         config_mod.load_for(target)
     with pytest.raises(config_mod.ConfigError):
         config_mod.load_for(target)
+
+
+# --- P3-5: keeping files out of a scan -----------------------------------
+
+def _findings(capsys, tmp_path, *args: str) -> list:
+    """Run the CLI over tmp_path and return the (rule, path) pairs it kept."""
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint", "check", str(tmp_path), "--format", "json", *args]
+        main()
+    finally:
+        sys.argv = old_argv
+    return [(d["rule_id"], d["file_path"]) for d
+            in json.loads(capsys.readouterr().out)]
+
+
+def _two_files(tmp_path) -> None:
+    for name in ("keep_me.py", "skip_me.py"):
+        (tmp_path / name).write_text(CODE, encoding="utf-8")
+
+
+def test_exclude_globs_drop_files_from_a_directory_scan(tmp_path, capsys) -> None:
+    _two_files(tmp_path)
+
+    found = _findings(capsys, tmp_path, "--exclude", "skip_*.py")
+
+    names = {name for _rule, name in found}
+    assert any(n.endswith("keep_me.py") for n in names), names
+    assert not any(n.endswith("skip_me.py") for n in names), names
+
+
+def test_exclude_from_config(tmp_path, capsys) -> None:
+    _two_files(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pcdlint]\nexclude = ["skip_me.py"]\n', encoding="utf-8")
+
+    names = {name for _rule, name in _findings(capsys, tmp_path)}
+
+    assert not any(n.endswith("skip_me.py") for n in names), names
+    assert any(n.endswith("keep_me.py") for n in names), names
+
+
+def test_cli_exclude_overrides_config(tmp_path, capsys) -> None:
+    """Like --select/--ignore, the flag replaces rather than merges."""
+    _two_files(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pcdlint]\nexclude = ["skip_me.py"]\n', encoding="utf-8")
+
+    names = {name for _rule, name in
+             _findings(capsys, tmp_path, "--exclude", "keep_me.py")}
+
+    assert any(n.endswith("skip_me.py") for n in names), names
+    assert not any(n.endswith("keep_me.py") for n in names), names
+
+
+def test_a_folder_with_pyvenv_cfg_is_skipped(tmp_path, capsys) -> None:
+    """venv311/ and .venv-py312/ are venvs too, and are not in SKIP_DIRS."""
+    venv = tmp_path / "venv311"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    (venv / "site.py").write_text(CODE, encoding="utf-8")
+
+    names = {name for _rule, name in _findings(capsys, tmp_path)}
+
+    assert not any("site.py" in n for n in names), names
+
+
+def test_empty_exclude_is_a_no_op(tmp_path, capsys) -> None:
+    _two_files(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pcdlint]\nexclude = []\n", encoding="utf-8")
+
+    names = {name for _rule, name in _findings(capsys, tmp_path)}
+
+    from pathlib import Path
+    assert {Path(n).name for n in names} >= {"keep_me.py", "skip_me.py"}

@@ -2,6 +2,7 @@
 
 import ast
 import os
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import cast
 
@@ -36,6 +37,53 @@ _TRY_NODES: tuple[type, ...] = tuple(
 def _child_stmts(node: ast.AST) -> list:
     """Statement children of ``node``, in source order."""
     return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.stmt)]
+
+
+def _skip_dir(directory: Path) -> bool:
+    """Skip a cache/vendored folder, and anything that is a Python venv.
+
+    A venv is whatever holds ``pyvenv.cfg``, so ``venv311/``, ``.venv-py312/``
+    and ``.tox/py311/`` are caught without naming every spelling in
+    SKIP_DIRS.
+    """
+    return directory.name in SKIP_DIRS or (directory / "pyvenv.cfg").is_file()
+
+
+def _exclude_patterns(path: Path, exclude: frozenset | None) -> frozenset:
+    """Globs keeping ``path`` out: the caller's, or the nearest config's.
+
+    A broken config is deliberately not resolved here -- analyze_code_ex
+    reports it as a blocking error, which is what a config problem must
+    produce rather than a silently smaller scan.
+    """
+    if exclude is not None:
+        return exclude
+    try:
+        return config.load_for(str(path)).exclude
+    except config.ConfigError:
+        return frozenset()
+
+
+def _is_excluded(path: Path, rel: str, patterns: frozenset) -> bool:
+    """Whether a glob keeps this file out of the scan.
+
+    Matched against the bare name and against the path relative to what was
+    scanned, so both ``--exclude "*.min.py"`` and ``--exclude "tests/*"``
+    do what they look like.
+    """
+    if not patterns:
+        return False
+    name = path.name
+    return any(fnmatch(name, pattern) or fnmatch(rel, pattern)
+               for pattern in patterns)
+
+
+def _relative_to(path: Path, root: Path) -> str:
+    """POSIX path of ``path`` inside ``root``, or its own name if it is not."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _sink_calls(tree: ast.AST) -> dict[int, list[int]]:
@@ -267,17 +315,22 @@ def _read_source(path: Path) -> tuple[str | None, str | None]:
 
 def analyze_path_ex(target_path: Path, *,
                     select: frozenset | None = None,
-                    ignore: frozenset | None = None) -> tuple[list[Diagnostic], list[str]]:
+                    ignore: frozenset | None = None,
+                    exclude: frozenset | None = None) -> tuple[list[Diagnostic], list[str]]:
     """Analyze a file or directory, returning diagnostics and blocking errors.
 
     Every path that cannot be analyzed (missing, not Python, undecodable,
-    unparseable) is reported instead of silently treated as clean.
+    unparseable) is reported instead of silently treated as clean. A path
+    kept out by ``exclude`` is a deliberate omission, not a failure.
     """
     errors: list[str] = []
 
     if target_path.is_file():
         if target_path.suffix != ".py":
             return [], [f"not a Python file: {target_path}"]
+        if _is_excluded(target_path, _relative_to(target_path, Path.cwd()),
+                        _exclude_patterns(target_path, exclude)):
+            return [], []
         source, error = _read_source(target_path)
         if error:
             return [], [error]
@@ -294,11 +347,14 @@ def analyze_path_ex(target_path: Path, *,
 
     all_diagnostics: list[Diagnostic] = []
     for root, dirs, files in os.walk(str(target_path)):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [d for d in dirs if not _skip_dir(Path(root) / d)]
         for fname in files:
             if not fname.endswith(".py"):
                 continue
             fpath = Path(root) / fname
+            if _is_excluded(fpath, _relative_to(fpath, target_path),
+                            _exclude_patterns(fpath, exclude)):
+                continue
             source, error = _read_source(fpath)
             if error:
                 errors.append(error)
@@ -314,7 +370,9 @@ def analyze_path_ex(target_path: Path, *,
 
 def analyze_path(target_path: Path, *,
                  select: frozenset | None = None,
-                 ignore: frozenset | None = None) -> list[Diagnostic]:
+                 ignore: frozenset | None = None,
+                 exclude: frozenset | None = None) -> list[Diagnostic]:
     """Analyze a file or directory and return its diagnostics only."""
-    diagnostics, _errors = analyze_path_ex(target_path, select=select, ignore=ignore)
+    diagnostics, _errors = analyze_path_ex(target_path, select=select,
+                                           ignore=ignore, exclude=exclude)
     return diagnostics

@@ -18,6 +18,13 @@ All notable changes to pcdlint are documented here. The format follows
   calls only, when a breakpoint is actually present. `PCL001`'s fix text now
   speaks to the provider too: Anthropic is told to move the value after a
   breakpoint, OpenAI to the end.
+- `exclude` in `[tool.pcdlint]` and a repeatable `--exclude GLOB` flag keep
+  files out of a scan entirely (the flag overrides the config, like
+  `--select`/`--ignore`). Globs match the bare file name *and* the path
+  relative to what was passed. Any folder holding a `pyvenv.cfg` is skipped
+  too, so `venv311/` and `.venv-py312/` no longer need their own name on the
+  skip list. Left alone as optional: honouring `.gitignore`, and reading
+  `.ipynb` code cells.
 
 ### Changed
 

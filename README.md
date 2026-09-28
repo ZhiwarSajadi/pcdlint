@@ -133,6 +133,9 @@ pcdlint check src/ --fail-on-warn
 pcdlint check src/ --select PCL001,PCL003
 pcdlint check src/ --ignore PCL002
 
+# Leave files out of the scan entirely (overrides [tool.pcdlint])
+pcdlint check src/ --exclude "tests/*" --exclude "*.min.py"
+
 # Equivalent module forms (no console script needed)
 python -m pcdlint check src/
 python -m pclint check src/
@@ -172,11 +175,18 @@ Rules can be turned on and off from `pyproject.toml` or the command line:
 [tool.pcdlint]
 select = ["PCL001", "PCL003"]   # run only these rules
 ignore = ["PCL002"]             # skip these, applied after select
+exclude = ["tests/*", "*.min.py"]  # never scan these at all
 ```
 
 The **nearest `pyproject.toml` above each analyzed file** is used, so a monorepo
 can give every package its own rule set. `select` is an allowlist; `ignore` is a
-denylist applied after it.
+denylist applied after it. `exclude` drops files before anything is analyzed —
+matched against the bare file name *and* the path relative to what you passed,
+so `"*.min.py"` and `"tests/*"` both do what they look like.
+
+A folder holding a `pyvenv.cfg` is skipped, whatever it is called: `venv311/`,
+`.venv-py312/` and `.tox/py311/` are caught without needing a name on the
+built-in skip list.
 
 `--select` and `--ignore` take a comma-separated list and are repeatable. Each
 flag **replaces** the corresponding config value for that run rather than merging
