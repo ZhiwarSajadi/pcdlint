@@ -1058,3 +1058,62 @@ def test_tools_appended_inside_a_match_case_are_flagged() -> None:
         "client.messages.create(model='m', messages=[], tools=tools)\n"
     )
     assert "PCL004" in _codes(source)
+
+
+# --- P1-7: a static-sounding name must still be a static value -----------
+
+def test_uppercase_name_bound_to_a_dynamic_value_is_not_static() -> None:
+    """PREFIX = str(uuid.uuid4()) is dynamic however it is spelled.
+
+    This is P1-7's acceptance test and it passed before any change: taint is
+    checked ahead of the solid test, so a tainted name never reaches
+    STATIC_PREFIX_NAMES. Kept as the guard it is.
+    """
+    source = (
+        "import uuid\n"
+        "PREFIX = str(uuid.uuid4())\n"
+        'client.messages.create(model="m", '
+        'system=PREFIX + "STATIC RULES " * 30)\n'
+    )
+    assert "PCL001" in _codes(source)
+
+
+def test_header_bound_to_unknown_data_is_kept_static_on_purpose() -> None:
+    """Known gap, left alone deliberately (P1-7, verify first).
+
+    `HEADER = request.headers["x"]` is dynamic but carries no taint source,
+    so the name list still calls it a solid and the taint after it is
+    written off. Closing that means treating *any* assigned-but-unrecorded
+    upper-case name as non-static, which turns `SYSTEM_PROMPT =
+    build_prompt()` into a PCL001 error everywhere -- and
+    test_pcl001_still_spared_by_a_listed_static_prefix_name pins the
+    opposite behaviour. Raised rather than guessed at.
+    """
+    source = (
+        "from datetime import datetime\n"
+        'HEADER = request.headers["x"]\n'
+        'client.messages.create(model="m", '
+        'system=HEADER + " | " + f"{datetime.now()}")\n'
+    )
+    assert _codes(source) == [], _codes(source)
+
+
+def test_uppercase_name_bound_to_a_string_is_still_static() -> None:
+    """Guard: a literal assigned to STATIC_RULES keeps its solid."""
+    source = (
+        'STATIC_RULES = "Be helpful."\n'
+        "from datetime import datetime\n"
+        'client.messages.create(model="m", '
+        'system=STATIC_RULES + f"{datetime.now()}")\n'
+    )
+    assert _codes(source) == [], _codes(source)
+
+
+def test_unassigned_uppercase_name_is_still_static() -> None:
+    """Guard: the name list still speaks for names this file never assigns."""
+    source = (
+        "from datetime import datetime\n"
+        'system = KNOWLEDGE_BASE + f"{datetime.now()}"\n'
+        'client.messages.create(model="m", system=system)\n'
+    )
+    assert _codes(source) == [], _codes(source)
