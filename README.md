@@ -1,7 +1,8 @@
 # pcdlint (Prompt-Cache Determinism Linter)
 
-[![CI Status](https://github.com/ZhiwarSajadi/pcdlint/workflows/CI/badge.svg)](https://github.com/ZhiwarSajadi/pcdlint/actions)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org)
+[![CI Status](https://github.com/ZhiwarSajadi/pcdlint/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhiwarSajadi/pcdlint/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/pcdlint)](https://pypi.org/project/pcdlint/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pcdlint)](https://pypi.org/project/pcdlint/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://opensource.org/licenses/MIT)
 
 A static taint analysis linter that detects code patterns silently invalidating LLM Prompt Caching (OpenAI & Anthropic SDKs).
