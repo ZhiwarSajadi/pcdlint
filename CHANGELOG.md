@@ -21,6 +21,12 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Changed
 
+- README accuracy pass: the examples now use `gpt-4o` (the old `gpt-4` does
+  not support prompt caching, so the snippet never cached), the flat "10x
+  read discount" is now "up to 90% cheaper, depending on provider and model"
+  with links to both pricing pages, and a new section contrasts OpenAI's
+  automatic longest-prefix caching with Anthropic's `cache_control`
+  breakpoints -- which is what `PCL001` and `PCL005` are each modelling.
 - PCL002 no longer claims `json.dumps()` is always non-deterministic. CPython
   dicts keep insertion order, so the key order only varies when the dict was
   *built* differently -- merged dicts, sets, DB rows, `**` spreads. The

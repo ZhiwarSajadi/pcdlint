@@ -11,13 +11,13 @@ A static taint analysis linter that detects code patterns silently invalidating 
 
 ## The $10,000 Bug Explained
 
-LLM prompt caching works by storing the **prefix** of a prompt in a fast cache. When the prefix matches a cached version, the model skips re-processing the prefix — delivering a **10x read discount** versus the full write cost.
+LLM prompt caching works by storing the **prefix** of a prompt in a fast cache. When the prefix matches a cached version, the model skips re-processing the prefix — costing **up to 90% less** than a full write, depending on the provider and model (see [OpenAI's pricing](https://platform.openai.com/docs/pricing) and [Anthropic's pricing](https://platform.claude.com/docs/en/about-claude/pricing)).
 
 The catch? The cache key is computed from the **exact byte sequence** of the prompt prefix. A single non-deterministic character at position 0 — like `datetime.now()` — changes every single byte, making the cache **completely useless**.
 
 ```
 Full Write Cost:  ██████████  ($0.030 / 1K tokens)
-Cache Read Cost:  █          ($0.003 / 1K tokens)  ← 10x cheaper
+Cache Read Cost:  █          ($0.003 / 1K tokens)  ← 90% cheaper
 ```
 
 One `datetime.now()` at character 0 silently destroys cache hits, wasting money on every request.
@@ -33,7 +33,7 @@ system = f"Time: {datetime.now()}\n{STATIC_RULES}"
 #                                    ^^^^^^^^^^^^ PREFIX TAINTED — every request has a unique prefix
 
 client.chat.completions.create(
-    model="gpt-4",
+    model="gpt-4o",
     messages=[{"role": "system", "content": system}],  # Cache MISS every time!
 )
 ```
@@ -47,10 +47,34 @@ system = f"{STATIC_RULES}\nTime: {datetime.now()}"
 #       ^^^^^^^^^^^^^^ Static prefix first, dynamic value at the end — cache prefix preserved
 
 client.chat.completions.create(
-    model="gpt-4",
+    model="gpt-4o",
     messages=[{"role": "system", "content": system}],  # Cache HIT — prefix bytes match!
 )
 ```
+
+---
+
+## How caching differs by provider
+
+Both providers cache a **prefix**, and neither will cache anything if the
+bytes keep moving — but they decide what counts as a hit differently:
+
+| | OpenAI | Anthropic |
+|---|--------|-----------|
+| Opting in | automatic | explicit `cache_control` breakpoints |
+| What must match | the longest prefix that still matches | every byte up to the last breakpoint |
+| Dynamic value at the *end* | partial hit on the part that still matched | — |
+| Dynamic value *before* the breakpoint | partial hit | **100% miss** |
+
+So the same code is not equally bad everywhere. OpenAI falls back to the
+longest prefix that still matches, which is why `PCL001` only complains when
+the dynamic value comes *before* the static text. Anthropic serves a cached
+prefix only when it is byte-identical up to a `cache_control` breakpoint, so
+`STATIC + f"{now}"` inside the block carrying that breakpoint throws away the
+whole cache — that is what `PCL005` reports.
+
+See [OpenAI's prompt caching guide](https://platform.openai.com/docs/guides/prompt-caching)
+and [Anthropic's prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 
 ---
 

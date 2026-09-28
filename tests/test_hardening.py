@@ -1300,3 +1300,21 @@ def test_pcl002_wording_is_honest_about_dict_order() -> None:
     assert "depends on how the dict was built" in found[0].message, \
         found[0].message
     assert "sort_keys=True" in found[0].fix_suggestion
+
+
+# --- P2-5: README claims that are not true -------------------------------
+
+def test_readme_examples_use_a_cache_capable_model() -> None:
+    """`gpt-4` predates prompt caching, so the example it shows never caches.
+
+    The README is the first thing a reader copies from, and it also has to
+    keep explaining why OpenAI and Anthropic disagree about what a hit is.
+    """
+    from pathlib import Path
+
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    text = readme.read_text(encoding="utf-8")
+
+    assert 'model="gpt-4"' not in text, "gpt-4 does not support prompt caching"
+    assert "10x read discount" not in text, "discount varies by provider/model"
+    assert "cache_control" in text, "the provider contrast section must stay"
