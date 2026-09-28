@@ -181,6 +181,18 @@ Comments are read with Python's tokenizer, so the same text inside a string
 literal is data and does nothing. A marker naming a rule that does not exist
 suppresses nothing — a typo surfaces the finding instead of hiding it.
 
+The marker may sit anywhere in the comment and be written without padding, so
+it can share a token with another pragma. All of these suppress:
+
+```python
+system = ...  # type: ignore  # pcdlint: disable
+system = ...  # noqa: E501 pcdlint: disable
+system = ...  #pcdlint:disable
+```
+
+It still has to be a complete marker: `# pcdlint: disable-all` and prose that
+merely mentions the keyword do not count.
+
 Comment the line pcdlint prints. For `PCL001` that is the line holding the
 `system=...` argument, not the line where the tainted value was built.
 

@@ -105,9 +105,47 @@ def test_marker_prefix_that_is_not_the_keyword_is_ignored() -> None:
 
 
 def test_marker_text_mid_comment_is_not_a_marker() -> None:
-    """The keyword only counts at the start of the comment, not inside prose."""
+    """The keyword only counts as a marker, not as a word inside prose."""
     marked = BASE.replace(
         "    system=system,\n",
         "    system=system,  # see pcdlint: disable for the syntax\n",
+    )
+    assert len(analyze_code(marked, "t.py")) >= 1
+
+
+# --- the marker no longer has to start the comment ------------------------
+
+def test_marker_after_another_pragma_on_the_same_comment_suppresses() -> None:
+    """`# type: ignore  # pcdlint: disable` is a single comment token."""
+    marked = BASE.replace(
+        "    system=system,\n",
+        "    system=system,  # type: ignore  # pcdlint: disable\n",
+    )
+    assert analyze_code(marked, "t.py") == []
+
+
+def test_marker_after_a_noqa_on_the_same_comment_suppresses() -> None:
+    """`# noqa: E501 pcdlint: disable` shares one token with the noqa."""
+    marked = BASE.replace(
+        "    system=system,\n",
+        "    system=system,  # noqa: E501 pcdlint: disable\n",
+    )
+    assert analyze_code(marked, "t.py") == []
+
+
+def test_marker_without_spaces_suppresses() -> None:
+    """`#pcdlint:disable` is the same marker with no padding."""
+    marked = BASE.replace(
+        "    system=system,\n",
+        "    system=system,  #pcdlint:disable\n",
+    )
+    assert analyze_code(marked, "t.py") == []
+
+
+def test_marker_followed_by_extra_word_is_not_a_marker() -> None:
+    """`disable-all` extends the keyword, so the word is not the marker."""
+    marked = BASE.replace(
+        "    system=system,\n",
+        "    system=system,  # pcdlint:disable-all\n",
     )
     assert len(analyze_code(marked, "t.py")) >= 1

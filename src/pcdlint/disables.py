@@ -13,9 +13,15 @@ Comments are found with :mod:`tokenize`, never by scanning raw text, so the
 marker appearing inside a string literal is data and does nothing. A marker
 naming an unknown rule suppresses nothing: a typo must surface the finding
 rather than hide it.
+
+The marker may sit anywhere in a comment, with any spacing, so it can share
+one token with another pragma (``# type: ignore  # pcdlint: disable``) or be
+written unpadded (``#pcdlint:disable``). It must still be a complete word --
+``# pcdlint: disable-all`` and prose mentioning the keyword do not count.
 """
 
 import io
+import re
 import tokenize
 
 from pcdlint.rules import KNOWN_RULE_IDS
@@ -23,6 +29,19 @@ from pcdlint.rules import KNOWN_RULE_IDS
 MARKER = "pcdlint: disable"
 # Stands for "every rule"; kept as a token so rule sets stay plain frozensets.
 ALL_RULES = "*"
+
+# The marker does not have to open the comment: another pragma may lead it,
+# so the two share a single comment token, and ``#pcdlint:disable`` has no
+# padding at all. The lookahead is what keeps a *word* from being a marker --
+# after ``disable`` only ``=``, a further comment, or the end may follow, so
+# ``disable-all`` and prose such as "see pcdlint: disable for the syntax"
+# still do nothing. Worked examples are spelled out in the module docstring
+# rather than here: ruff parses this comment for noqa directives of its own.
+_MARKER_RE = re.compile(
+    r"pcdlint\s*:\s*disable"
+    r"(?:\s*=\s*([A-Za-z0-9_,\s]+))?"
+    r"(?=\s*(?:#|$))"
+)
 
 
 def _rule_ids(spec: str) -> set[str]:
@@ -33,17 +52,13 @@ def _rule_ids(spec: str) -> set[str]:
 
 def _marker_rules(comment: str) -> frozenset[str] | None:
     """Rule set a comment asks for, or None when it is not a marker at all."""
-    text = comment.strip()
-    if text.startswith("#"):
-        text = text[1:].strip()
-    if not text.startswith(MARKER):
+    match = _MARKER_RE.search(comment)
+    if match is None:
         return None
-    rest = text[len(MARKER):].strip()
-    if not rest:
+    spec = match.group(1)
+    if spec is None:
         return frozenset({ALL_RULES})
-    if not rest.startswith("="):
-        return None
-    return frozenset(_rule_ids(rest[1:])) or None
+    return frozenset(_rule_ids(spec)) or None
 
 
 class DisableSet:
@@ -70,9 +85,10 @@ class DisableSet:
 
 def parse(source: str) -> DisableSet:
     """Extract every disable comment from ``source``."""
-    # Fast path: the overwhelming majority of files contain no marker, and
-    # tokenizing them would buy nothing.
-    if MARKER not in source:
+    # Fast path: the overwhelming majority of files never mention pcdlint at
+    # all, and tokenizing them would buy nothing. The probe is deliberately
+    # looser than the marker -- it must also see ``#pcdlint:disable``.
+    if "pcdlint" not in source:
         return DisableSet(frozenset(), {})
 
     lines = source.splitlines()

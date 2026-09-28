@@ -8,6 +8,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Suppression markers no longer have to open the comment. `# type: ignore  #
+  pcdlint: disable` and `# noqa: E501 pcdlint: disable` are a single comment
+  token and used to be ignored, as was the unpadded `#pcdlint:disable`. The
+  marker must still be a complete word, so `# pcdlint: disable-all` and prose
+  mentioning the keyword still suppress nothing.
 - `--diff` no longer misfiles hunks after a line that merely looks like a
   file header. An added line whose text is `++ foo` renders as `+++ foo`
   (and a removed `-- x` as `--- x`), which used to re-point the parser at a
