@@ -28,6 +28,16 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Changed
 
+- Every third-party action is pinned to a commit SHA with a `# vX` comment,
+  so a tag cannot be retargeted out from under the build -- including
+  `pypa/gh-action-pypi-publish`, which is the one that publishes. Dependabot
+  keeps the pins current. `actions/checkout` is at v7 and
+  `actions/setup-python` at v7 (Dependabot PRs #1 and #2, both merged after
+  their CI passed); neither workflow used an input those releases removed.
+  The publish workflow now runs on a protected `environment: pypi`, runs the
+  test suite before building, and no longer offers `workflow_dispatch` --
+  dispatching from a branch carries no tag, so the tag/version check would
+  have failed every time. The README's CI example matches.
 - JSON output carries `fixable` (so a consumer knows what `--fix` will touch
   without re-running) plus `end_lineno` / `end_col_offset`. Text output
   escapes Rich markup in the path, message and fix suggestion, so a file

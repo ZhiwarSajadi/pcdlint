@@ -251,15 +251,15 @@ jobs:
       contents: read
       security-events: write   # required to upload SARIF
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       - run: pip install pcdlint
       - run: pcdlint check src/ --fail-on-warn
       # Findings appear directly on the PR diff via Code Scanning.
       - run: pcdlint check src/ --format sarif > pcdlint.sarif
-      - uses: github/codeql-action/upload-sarif@v4
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
         with:
           sarif_file: pcdlint.sarif
 ```

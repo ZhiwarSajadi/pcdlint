@@ -1356,3 +1356,31 @@ def test_reachability_is_only_probed_for_nodes_that_can_match() -> None:
         f"_reaches_prompt was probed {len(probed)} times on code with no set "
         "iteration and no json.dumps"
     )
+
+
+# --- P3-6: workflow actions must not float -------------------------------
+
+def test_every_workflow_action_is_pinned_to_a_commit_sha() -> None:
+    """A tag is a movable pointer: whoever owns the repo can retarget it.
+
+    Dependabot keeps SHA pins updated, so pinning costs nothing after the
+    first time.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pinned = 0
+    for workflow in sorted((root / ".github" / "workflows").glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            match = re.search(r"uses:\s*\S+@(\S+)", line)
+            if match is None:
+                continue
+            ref = match.group(1)
+            assert re.fullmatch(r"[0-9a-f]{40}", ref), (
+                f"{workflow.name}:{lineno} uses '@{ref}', a movable ref"
+            )
+            pinned += 1
+
+    assert pinned >= 8, f"expected the workflows' actions, found {pinned}"
