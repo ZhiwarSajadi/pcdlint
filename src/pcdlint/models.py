@@ -26,6 +26,22 @@ class FuncSummary:
     json_flows: frozenset[int] = frozenset()
 
 
+@dataclass(frozen=True)
+class TextEdit:
+    """A byte-precise replacement spanning part of a source file.
+
+    Lines are 1-based; columns are 0-based *byte* offsets within the line,
+    matching what ``ast`` reports (``col_offset`` counts UTF-8 bytes, not
+    characters), so a span before a non-ASCII character still splices cleanly.
+    """
+
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
+    replacement: str
+
+
 @dataclass
 class Diagnostic:
     """A single lint diagnostic result."""
@@ -38,3 +54,6 @@ class Diagnostic:
     message: str
     fix_suggestion: str
     severity: str  # "ERROR" or "WARNING"
+    # Concrete rewrites for rules whose fix is mechanical. Empty for rules
+    # where only a human can decide what the right code looks like.
+    edits: tuple[TextEdit, ...] = ()

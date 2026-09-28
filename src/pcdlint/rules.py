@@ -3,7 +3,7 @@
 import ast
 from collections.abc import Sequence
 
-from pcdlint.models import Diagnostic, TaintOrigin
+from pcdlint.models import Diagnostic, TaintOrigin, TextEdit
 from pcdlint.taint import TaintTracker
 
 # Substrings that mark an assignment target as prompt/LLM-prefix material.
@@ -12,6 +12,33 @@ PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "c
 # Every rule this engine can emit. Selectors and disable comments are validated
 # against it so a typo can never silently switch a rule off (or on).
 KNOWN_RULE_IDS: frozenset = frozenset({"PCL001", "PCL002", "PCL003", "PCL004"})
+
+
+def _end_pos(node: ast.AST) -> tuple[int, int] | None:
+    """``(line, byte_col)`` just past ``node``, when ast recorded one."""
+    line = getattr(node, "end_lineno", None)
+    col = getattr(node, "end_col_offset", None)
+    if line is None or col is None:
+        return None
+    return line, col
+
+
+def _insert_before(node: ast.expr, text: str) -> TextEdit | None:
+    return TextEdit(node.lineno, node.col_offset, node.lineno, node.col_offset, text)
+
+
+def _insert_after(node: ast.AST, text: str) -> TextEdit | None:
+    end = _end_pos(node)
+    if end is None:
+        return None
+    return TextEdit(end[0], end[1], end[0], end[1], text)
+
+
+def _replace(node: ast.expr, text: str) -> TextEdit | None:
+    end = _end_pos(node)
+    if end is None:
+        return None
+    return TextEdit(node.lineno, node.col_offset, end[0], end[1], text)
 
 
 class RuleEngine:
@@ -41,7 +68,8 @@ class RuleEngine:
         return self._diagnostics
 
     def _add(self, lineno: int, col_offset: int, rule_id: str, rule_name: str,
-             message: str, fix_suggestion: str, severity: str) -> None:
+             message: str, fix_suggestion: str, severity: str,
+             edits: tuple[TextEdit, ...] = ()) -> None:
         self._diagnostics.append(Diagnostic(
             file_path=self._file_path,
             lineno=lineno,
@@ -51,6 +79,7 @@ class RuleEngine:
             message=message,
             fix_suggestion=fix_suggestion,
             severity=severity,
+            edits=edits,
         ))
 
     @staticmethod
@@ -267,7 +296,29 @@ class RuleEngine:
                 message="json.dumps() called without sort_keys=True",
                 fix_suggestion="Pass 'sort_keys=True' to 'json.dumps(...)' to guarantee deterministic key serialization across requests.",
                 severity="WARNING",
+                edits=self._pcl002_edits(node),
             )
+
+    @staticmethod
+    def _pcl002_edits(node: ast.Call) -> tuple:
+        """A rewrite that adds sort_keys=True without ever duplicating it."""
+        sort_kw = next((kw for kw in node.keywords if kw.arg == "sort_keys"), None)
+        if sort_kw is not None and sort_kw.value is not None:
+            edit = _replace(sort_kw.value, "True")
+            return (edit,) if edit else ()
+        if not node.args and not node.keywords:
+            # No argument to follow and no comma to lead with, so the keyword
+            # goes straight before the closing paren.
+            end = _end_pos(node)
+            if end is None:
+                return ()
+            line, col = end
+            return (TextEdit(line, col - 1, line, col - 1, "sort_keys=True"),)
+        # Anchoring after the last argument keeps a trailing comma valid:
+        # ``json.dumps(x,)`` becomes ``json.dumps(x, sort_keys=True,)``.
+        anchor = node.keywords[-1].value if node.keywords else node.args[-1]
+        edit = _insert_after(anchor, ", sort_keys=True")
+        return (edit,) if edit else ()
 
     @staticmethod
     def _has_sort_keys_arg(node: ast.Call) -> bool:
@@ -311,6 +362,15 @@ class RuleEngine:
         return ("Wrap the set in 'sorted(...)' before string conversion; "
                 "Python's PYTHONHASHSEED randomizes set iteration order across processes.")
 
+    @staticmethod
+    def _pcl003_edits(argument: ast.expr | None) -> tuple:
+        """Wrap ``argument`` in ``sorted(...)`` as two insertions around it."""
+        if argument is None:
+            return ()
+        opening = _insert_before(argument, "sorted(")
+        closing = _insert_after(argument, ")")
+        return tuple(e for e in (opening, closing) if e is not None)
+
     def _check_pcl003(self, node: ast.AST) -> None:
         # Check join calls: "...".join(tag_set)
         if isinstance(node, ast.Call):
@@ -324,6 +384,7 @@ class RuleEngine:
                     message="Set iterated in join() without sorted() - iteration order is non-deterministic",
                     fix_suggestion=self._pcl003_fix(),
                     severity="ERROR",
+                    edits=self._pcl003_edits(node.args[0]),
                 )
                 return
             # Check str(tag_set)
@@ -337,6 +398,7 @@ class RuleEngine:
                     message="Set converted to string without sorted() - iteration order is non-deterministic",
                     fix_suggestion=self._pcl003_fix(),
                     severity="ERROR",
+                    edits=self._pcl003_edits(node.args[0]),
                 )
                 return
 
@@ -352,6 +414,7 @@ class RuleEngine:
                         message="Set interpolated in f-string without sorted() - iteration order is non-deterministic",
                         fix_suggestion=self._pcl003_fix(),
                         severity="ERROR",
+                        edits=self._pcl003_edits(part.value),
                     )
                     return
 

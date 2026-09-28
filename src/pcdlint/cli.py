@@ -1,6 +1,7 @@
 """CLI entry point for pcdlint."""
 
 import argparse
+import ast
 import sys
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,63 @@ from rich.table import Table
 
 from pcdlint import __version__, config
 from pcdlint.analyzer import analyze_path_ex
+from pcdlint.fixer import apply_edits
+
+
+def _analyze_paths(paths: list, select: frozenset | None,
+                   ignore: frozenset | None) -> tuple[list, list[str]]:
+    """Analyze every path, keeping diagnostics and blocking errors apart."""
+    diagnostics: list = []
+    errors: list[str] = []
+    for path_str in paths:
+        found, path_errors = analyze_path_ex(Path(path_str), select=select,
+                                             ignore=ignore)
+        diagnostics.extend(found)
+        errors.extend(path_errors)
+    return diagnostics, errors
+
+
+def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
+    """Rewrite every file that carries mechanical fixes, in place.
+
+    Returns ``(files changed, findings with no fix, errors)``. A rewrite that
+    no longer parses is reported and skipped: losing a finding is recoverable,
+    corrupting a source file is not.
+    """
+    by_file: dict[str, list] = {}
+    for diagnostic in diagnostics:
+        by_file.setdefault(diagnostic.file_path, []).append(diagnostic)
+
+    changed = 0
+    skipped = 0
+    errors: list[str] = []
+    for file_path, found in by_file.items():
+        skipped += sum(1 for d in found if not d.edits)
+        edits = [edit for d in found for edit in d.edits]
+        if not edits:
+            continue
+        path = Path(file_path)
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"cannot re-read {path}: {exc}")
+            continue
+        fixed = apply_edits(source, edits)
+        if fixed == source:
+            continue
+        try:
+            ast.parse(fixed, filename=str(path))
+        except SyntaxError:
+            errors.append(f"autofix for {path} produced invalid syntax; "
+                          f"file left unchanged")
+            continue
+        try:
+            path.write_text(fixed, encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"cannot write {path}: {exc}")
+            continue
+        changed += 1
+    return changed, skipped, errors
 
 
 def main() -> int:
@@ -44,6 +102,11 @@ def main() -> int:
         help="Exit with code 1 if any WARNING is found",
     )
     parser.add_argument(
+        "--fix", action="store_true",
+        help="Apply safe automatic fixes (PCL002 sort_keys, PCL003 sorted) "
+             "in place, then report what still fails",
+    )
+    parser.add_argument(
         "--select", action="append", metavar="RULES", default=None,
         help="Comma-separated rule ids to run (repeatable); overrides "
              "[tool.pcdlint] select",
@@ -76,13 +139,22 @@ def main() -> int:
         if not raw_paths:
             raw_paths = ["."]
 
-    all_diagnostics = []
-    all_errors = []
-    for path_str in raw_paths:
-        path = Path(path_str)
-        diags, errors = analyze_path_ex(path, select=select, ignore=ignore)
-        all_diagnostics.extend(diags)
-        all_errors.extend(errors)
+    all_diagnostics, all_errors = _analyze_paths(raw_paths, select, ignore)
+
+    if args.fix:
+        changed, skipped, fix_errors = _apply_fixes(all_diagnostics)
+        all_errors.extend(fix_errors)
+        if changed:
+            # Re-read so the report and the exit code describe what is on
+            # disk now, not what was there before the rewrite.
+            all_diagnostics, recheck_errors = _analyze_paths(raw_paths, select, ignore)
+            all_errors.extend(recheck_errors)
+        if changed or skipped:
+            print(
+                f"pcdlint: fixed {changed} file(s); "
+                f"{skipped} finding(s) have no automatic fix",
+                file=sys.stderr,
+            )
 
     all_diagnostics.sort(key=lambda d: (d.file_path, d.lineno, d.col_offset))
 
