@@ -456,3 +456,153 @@ def test_pcl001_taint_after_last_message_without_breakpoint() -> None:
         client.messages.create(model="m", messages=messages)
     '''
     assert _codes(source) == []
+
+
+# --- v0.2: branch-sensitive merging (if/else, IfExp, try/except) ---
+
+def test_branch_identical_static_tools_not_flagged() -> None:
+    """Both arms bind the same static list, so tool order cannot vary."""
+    source = '''
+        if flag:
+            tools = [tool_a, tool_b]
+        else:
+            tools = [tool_a, tool_b]
+        client.messages.create(model="m", messages=[], tools=tools)
+    '''
+    assert _codes(source) == []
+
+
+def test_branch_disagreeing_tools_still_flagged() -> None:
+    """Arms disagree -> the name really is conditionally constructed."""
+    source = '''
+        tools = []
+        if flag:
+            tools.append(tool_c)
+        client.messages.create(model="m", messages=[], tools=tools)
+    '''
+    assert _codes(source) == ["PCL004"]
+
+
+def test_append_over_static_list_not_flagged() -> None:
+    """Iterating a list literal yields a deterministic order."""
+    source = '''
+        SPEC = [tool_a, tool_b]
+        tools = []
+        for t in SPEC:
+            tools.append(t)
+        client.messages.create(model="m", messages=[], tools=tools)
+    '''
+    assert _codes(source) == []
+
+
+def test_append_over_set_still_flagged() -> None:
+    """A set iterator is exactly the non-determinism PCL004 exists to catch."""
+    source = '''
+        SPEC = {tool_a, tool_b}
+        tools = []
+        for t in SPEC:
+            tools.append(t)
+        client.messages.create(model="m", messages=[], tools=tools)
+    '''
+    assert _codes(source) == ["PCL004"]
+
+
+def test_pcl001_taint_only_in_ifexp_true_branch() -> None:
+    """A conditional expression carries taint when either arm is tainted."""
+    source = '''
+        from datetime import datetime
+        system = f"{datetime.now()} " + "STATIC RULES " * 30 if flag else "STATIC RULES " * 30
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == ["PCL001"]
+
+
+def test_pcl001_taint_only_in_try_body() -> None:
+    """The handler must not erase taint recorded on the try path."""
+    source = '''
+        from datetime import datetime
+        try:
+            system = f"{datetime.now()} " + "STATIC RULES " * 30
+        except Exception:
+            system = "STATIC RULES " * 30
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == ["PCL001"]
+
+
+def test_pcl001_taint_only_in_else_branch_kept() -> None:
+    """May-analysis: taint on the else path alone must still be reported."""
+    source = '''
+        from datetime import datetime
+        if flag:
+            system = "STATIC RULES " * 30
+        else:
+            system = f"{datetime.now()} " + "STATIC RULES " * 30
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == ["PCL001"]
+
+
+def test_both_branches_static_prompt_not_flagged() -> None:
+    """Two static arms agree, so the prompt is deterministic either way."""
+    source = '''
+        if flag:
+            system = "STATIC RULES " * 30
+        else:
+            system = "STATIC RULES " * 30 + " more"
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == []
+
+
+# --- v0.2: interprocedural summaries resolved to a fixpoint ---
+
+def test_pcl001_function_chain_declared_in_reverse_order() -> None:
+    """Callers declared before their callees must still resolve, at any depth."""
+    source = '''
+        from datetime import datetime
+        def outer():
+            return middle()
+        def middle():
+            return inner()
+        def inner():
+            return datetime.now()
+        system = f"{outer()} " + "STATIC RULES " * 30
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == ["PCL001"]
+
+
+def test_pcl004_function_returning_a_set() -> None:
+    """A callee's set-ness has to reach the caller, not just its taint."""
+    source = '''
+        def get_tools():
+            return {tool_a, tool_b, tool_c}
+        tools = list(get_tools())
+        client.messages.create(model="m", messages=[], tools=tools)
+    '''
+    assert _codes(source) == ["PCL004"]
+
+
+def test_pcl002_function_returning_unsorted_json() -> None:
+    """A callee's unsorted json.dumps has to flow into the prompt variable."""
+    source = '''
+        import json
+        def payload():
+            return json.dumps(data)
+        prompt = "Prompt header " * 30 + payload()
+        client.messages.create(
+            model="m", messages=[{"role": "user", "content": prompt}])
+    '''
+    assert _codes(source) == ["PCL002"]
+
+
+def test_pcl004_direct_function_return_of_set() -> None:
+    """Assigning the callee's result straight to ``tools`` is the same risk."""
+    source = '''
+        def get_tools():
+            return {tool_a, tool_b}
+        tools = get_tools()
+        client.messages.create(model="m", messages=[], tools=tools)
+    '''
+    assert _codes(source) == ["PCL004"]

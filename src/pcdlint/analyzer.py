@@ -13,37 +13,94 @@ SKIP_DIRS: set[str] = {
     ".venv", "venv", "node_modules", ".git", "__pycache__", "build", "dist",
     ".tox", ".nox", ".mypy_cache", ".ruff_cache", ".eggs", "htmlcov",
 }
-# Passes over the AST: later passes let assignment tracking see function-return
-# taint resolved by the previous pass. Expression statements (list.append, ...)
-# only run on the first pass so they are not applied twice.
-_MAX_PASSES = 3
+# Iterations over the AST. Each pass lets assignment tracking see the function
+# summaries resolved by the previous one, so a call chain resolves one link per
+# pass regardless of the order the functions were declared in. 16 is a cost
+# ceiling, not a correctness bound -- the loop stops as soon as the summaries
+# stop changing. Expression statements (list.append, ...) only run on the first
+# pass so they are not applied twice.
+_MAX_PASSES = 16
 
 
-def _walk_source_order(tree: ast.AST):
-    """Depth-first pre-order walk, i.e. the order Python actually executes code.
-
-    ``ast.walk`` is breadth-first, which would apply a statement nested in an
-    ``if`` body after every later top-level statement.
-    """
-    stack = [tree]
-    while stack:
-        node = stack.pop()
-        yield node
-        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+def _child_stmts(node: ast.AST) -> list:
+    """Statement children of ``node``, in source order."""
+    return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.stmt)]
 
 
 def _track_tree(tracker: TaintTracker, tree: ast.AST) -> None:
+    """Walk statements in execution order, merging sibling control-flow paths.
+
+    Python executes one arm of a branch, never both. Tracking each arm from
+    the same snapshot and may-merging the results is what keeps a taint
+    recorded on the ``try`` path from being erased by its handler, and what
+    lets two arms that bind the same expression be recognised as equal.
+    """
     for pass_no in range(_MAX_PASSES):
-        for node in _walk_source_order(tree):
-            if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                tracker.track_assignment(node)
-            elif pass_no == 0:
-                if isinstance(node, ast.AugAssign):
-                    tracker.track_aug_assign(node)
-                elif isinstance(node, ast.Expr):
-                    tracker.track_expr_stmt(node)
+        _walk_stmts(tracker, _child_stmts(tree), pass_no)
         if not tracker.build_function_returns(tree):
             break
+
+
+def _walk_stmts(tracker: TaintTracker, stmts: list, pass_no: int) -> None:
+    for stmt in stmts:
+        if isinstance(stmt, ast.If):
+            _track_if(tracker, stmt, pass_no)
+        elif isinstance(stmt, ast.Try):
+            _track_try(tracker, stmt, pass_no)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            _track_loop(tracker, stmt, pass_no)
+        else:
+            _track_simple(tracker, stmt, pass_no)
+            _walk_stmts(tracker, _child_stmts(stmt), pass_no)
+
+
+def _track_simple(tracker: TaintTracker, stmt: ast.AST, pass_no: int) -> None:
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+        tracker.track_assignment(stmt)
+    elif pass_no == 0:
+        # Expression statements mutate lists in place, so they run once only.
+        if isinstance(stmt, ast.AugAssign):
+            tracker.track_aug_assign(stmt)
+        elif isinstance(stmt, ast.Expr):
+            tracker.track_expr_stmt(stmt)
+
+
+def _track_if(tracker: TaintTracker, node: ast.If, pass_no: int) -> None:
+    before = tracker.snapshot()
+    _walk_stmts(tracker, node.body, pass_no)
+    on_body = tracker.snapshot()
+    tracker.restore(before)
+    _walk_stmts(tracker, node.orelse, pass_no)
+    on_else = tracker.snapshot()
+    tracker.restore(on_body)
+    tracker.merge_path(on_else)
+
+
+def _track_try(tracker: TaintTracker, node: ast.Try, pass_no: int) -> None:
+    before = tracker.snapshot()
+    _walk_stmts(tracker, node.body, pass_no)
+    _walk_stmts(tracker, node.orelse, pass_no)
+    on_success = tracker.snapshot()
+    tracker.restore(before)
+    for handler in node.handlers:
+        _walk_stmts(tracker, handler.body, pass_no)
+    on_failure = tracker.snapshot()
+    tracker.restore(on_success)
+    tracker.merge_path(on_failure)
+    # ``finally`` runs on both paths, so it follows the merge.
+    _walk_stmts(tracker, node.finalbody, pass_no)
+
+
+def _track_loop(tracker: TaintTracker, node: ast.For | ast.AsyncFor | ast.While,
+                pass_no: int) -> None:
+    before = tracker.snapshot()
+    _walk_stmts(tracker, node.body, pass_no)
+    on_iteration = tracker.snapshot()
+    tracker.restore(before)
+    zero_iterations = tracker.snapshot()
+    tracker.restore(on_iteration)
+    tracker.merge_path(zero_iterations)
+    _walk_stmts(tracker, node.orelse, pass_no)
 
 
 def _dedupe(diagnostics: list[Diagnostic]) -> list[Diagnostic]:

@@ -399,7 +399,8 @@ class RuleEngine:
                 and tools_var.func.id == "list" and tools_var.args:
             arg = tools_var.args[0]
             if (isinstance(arg, ast.Name) and self.tracker.is_set_variable(arg.id, arg)) \
-                    or isinstance(arg, (ast.Set, ast.SetComp)):
+                    or isinstance(arg, (ast.Set, ast.SetComp)) \
+                    or self.tracker.returns_set(arg):
                 self._add(
                     lineno=tools_var.lineno,
                     col_offset=tools_var.col_offset,

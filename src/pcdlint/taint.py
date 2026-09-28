@@ -5,7 +5,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import replace
 from typing import TypeVar
 
-from pcdlint.models import TaintOrigin
+from pcdlint.models import FuncSummary, TaintOrigin
 
 # A lexical scope path, e.g. ("module",) or ("module", "handler", "inner").
 Scope = tuple[str, ...]
@@ -20,6 +20,7 @@ TAINT_SOURCES: dict[tuple, str] = {
     ("datetime", "utcnow"): "datetime.utcnow",
     ("date", "today"): "date.today",
     ("time", "time"): "time.time",
+    ("time", "time_ns"): "time.time_ns",
     ("time", "monotonic"): "time.monotonic",
     ("time", "perf_counter"): "time.perf_counter",
     ("uuid", "uuid4"): "uuid.uuid4",
@@ -27,10 +28,14 @@ TAINT_SOURCES: dict[tuple, str] = {
     ("random", "random"): "random.random",
     ("random", "randint"): "random.randint",
     ("random", "choice"): "random.choice",
+    ("random", "choices"): "random.choices",
+    ("random", "sample"): "random.sample",
     ("random", "randrange"): "random.randrange",
     ("secrets", "token_hex"): "secrets.token_hex",
     ("secrets", "token_urlsafe"): "secrets.token_urlsafe",
+    ("secrets", "token_bytes"): "secrets.token_bytes",
     ("os", "urandom"): "os.urandom",
+    ("os", "getpid"): "os.getpid",
 }
 
 STATIC_PREFIX_NAMES: set[str] = {
@@ -42,8 +47,6 @@ STATIC_PREFIX_NAMES: set[str] = {
 STATIC_SOLID_MIN_CHARS = 200
 # Bound for repeated-string length math ("x" * huge) so evaluation stays cheap.
 _MAX_STATIC_CHARS = 1_000_000
-# Passes used to propagate function-return taint into callers.
-_MAX_FLOW_PASSES = 3
 
 
 def _extract_dotted_name(node: ast.AST) -> str:
@@ -95,19 +98,36 @@ def _has_sort_keys(node: ast.Call) -> bool:
     return False
 
 
-def _child_branch_flags(node: ast.AST, in_branch: bool, count: int) -> list[bool]:
-    """Whether each child of ``node`` only executes on some control-flow paths."""
-    if isinstance(node, ast.If):
-        # test runs unconditionally; body/orelse do not.
-        return [in_branch] + [True] * (count - 1)
+def _same_ast(left: ast.AST | None, right: ast.AST | None) -> bool:
+    """True when two nodes are the same node or spell the same expression."""
+    if left is None or right is None:
+        return False
+    return left is right or ast.dump(left) == ast.dump(right)
+
+
+def _child_flags(node: ast.AST, in_cond: bool, in_loop: bool,
+                 loop_iter: ast.AST | None, count: int) -> list[tuple[bool, bool, ast.AST | None]]:
+    """``(in_conditional, in_loop, loop_iterator)`` for each child of ``node``.
+
+    A *conditional* is an if/elif/else arm, a conditional expression, or a
+    try/except arm -- code that provably runs on only some paths. A *loop*
+    body may run zero times but is not branchy in the same sense; keeping the
+    two apart is what lets a ``for`` over a list literal stay deterministic
+    while an ``if`` around the same mutation does not.
+    """
+    inherit = (in_cond, in_loop, loop_iter)
+    if isinstance(node, (ast.If, ast.IfExp)):
+        # head child (the test) runs unconditionally; the arms do not.
+        return [inherit] + [(True, in_loop, loop_iter)] * (count - 1)
     if isinstance(node, ast.While):
-        return [in_branch] + [True] * (count - 1)
+        # head child (the test) runs unconditionally; the body may run zero times.
+        return [inherit] + [(in_cond, True, None)] * (count - 1)
     if isinstance(node, (ast.For, ast.AsyncFor)):
         # target and iter run unconditionally; body/orelse do not.
-        return [in_branch, in_branch] + [True] * (count - 2)
-    if isinstance(node, (ast.Try, ast.ExceptHandler, ast.IfExp)):
-        return [True] * count
-    return [in_branch] * count
+        return [inherit, inherit] + [(in_cond, True, node.iter)] * (count - 2)
+    if isinstance(node, (ast.Try, ast.ExceptHandler)):
+        return [(True, in_loop, loop_iter)] * count
+    return [inherit] * count
 
 
 class _Bindings:
@@ -151,6 +171,68 @@ class _Bindings:
         self.lists.update(other.lists)
         self.dicts.update(other.dicts)
 
+    def copy(self) -> "_Bindings":
+        """Shallow copy of every container, so sibling paths can diverge."""
+        clone = _Bindings()
+        clone.tainted = dict(self.tainted)
+        clone.prefix_tainted = dict(self.prefix_tainted)
+        clone.sets = set(self.sets)
+        clone.static = dict(self.static)
+        clone.tools_mutated = set(self.tools_mutated)
+        clone.branch = set(self.branch)
+        clone.json_unsorted = set(self.json_unsorted)
+        clone.json_flows = {k: set(v) for k, v in self.json_flows.items()}
+        clone.lists = dict(self.lists)
+        clone.dicts = dict(self.dicts)
+        return clone
+
+    def paths_agree(self, key: Key, other: "_Bindings") -> bool:
+        """True only when both paths bound ``key`` to structurally equal values.
+
+        Reporting "these two arms are the same" needs evidence. When neither
+        path holds a list or dict literal for the name there is nothing to
+        compare, so the caller keeps its flag rather than clearing it.
+        """
+        for mine, theirs in ((self.lists.get(key), other.lists.get(key)),
+                             (self.dicts.get(key), other.dicts.get(key))):
+            if mine is not None or theirs is not None:
+                return _same_ast(mine, theirs)
+        return False
+
+    def merge_path(self, other: "_Bindings") -> None:
+        """May-merge a sibling control-flow path into this one.
+
+        Taint-like stores are unioned: a value reached on either arm is a
+        value the runtime can see. ``static`` is the opposite -- a name only
+        counts as static text when every path binds it identically.
+        """
+        for key, origin in other.tainted.items():
+            self.tainted.setdefault(key, origin)
+        for key, origin in other.prefix_tainted.items():
+            self.prefix_tainted.setdefault(key, origin)
+        self.sets |= other.sets
+        self.tools_mutated |= other.tools_mutated
+        self.json_unsorted |= other.json_unsorted
+        for key, flows in other.json_flows.items():
+            self.json_flows.setdefault(key, set()).update(flows)
+
+        for key in list(self.static):
+            if other.static.get(key) != self.static[key]:
+                del self.static[key]
+
+        # Structural bindings are a resolution aid, not a claim: keep the one
+        # that exists, preferring this path when both arms bound the name.
+        for key, lst in other.lists.items():
+            self.lists.setdefault(key, lst)
+        for key, dct in other.dicts.items():
+            self.dicts.setdefault(key, dct)
+
+        # The conditional flag survives only when the arms provably differ.
+        self.branch |= other.branch
+        for key in list(self.branch):
+            if key in other.branch and self.paths_agree(key, other):
+                self.branch.discard(key)
+
     def clear_key(self, key: Key) -> None:
         """Drop every binding for one name (strong update on reassignment)."""
         for store in (self.tainted, self.prefix_tainted, self.static,
@@ -168,27 +250,35 @@ class TaintTracker:
     def __init__(self) -> None:
         self._node_scope: dict[int, Scope] = {}
         self._node_branch: dict[int, bool] = {}
+        self._node_cond: dict[int, bool] = {}
+        self._node_loop: dict[int, bool] = {}
+        self._node_loop_iter: dict[int, ast.AST | None] = {}
         self._b = _Bindings()
-        self._func_returns: dict[Key, TaintOrigin] = {}
+        self._func_summaries: dict[Key, FuncSummary] = {}
 
     # ------------------------------------------------------------------
     # Scopes and branch positions
     # ------------------------------------------------------------------
 
     def build_scopes(self, tree: ast.AST) -> None:
-        """Map every node to its lexical scope and whether it sits in a branch."""
-        stack: list[tuple[ast.AST, Scope, bool]] = [(tree, MODULE_SCOPE, False)]
+        """Map every node to its lexical scope and branch position."""
+        stack: list[tuple[ast.AST, Scope, bool, bool, ast.AST | None]] = [
+            (tree, MODULE_SCOPE, False, False, None),
+        ]
         while stack:
-            node, scope, in_branch = stack.pop()
+            node, scope, in_cond, in_loop, loop_iter = stack.pop()
             self._node_scope[id(node)] = scope
-            self._node_branch[id(node)] = in_branch
+            self._node_branch[id(node)] = in_cond or in_loop
+            self._node_cond[id(node)] = in_cond
+            self._node_loop[id(node)] = in_loop
+            self._node_loop_iter[id(node)] = loop_iter
             child_scope = scope
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 child_scope = scope + (node.name,)
             children = list(ast.iter_child_nodes(node))
-            flags = _child_branch_flags(node, in_branch, len(children))
-            for child, child_branch in zip(children, flags):
-                stack.append((child, child_scope, child_branch))
+            flags = _child_flags(node, in_cond, in_loop, loop_iter, len(children))
+            for child, (c_cond, c_loop, c_iter) in zip(children, flags):
+                stack.append((child, child_scope, c_cond, c_loop, c_iter))
 
     def scope_of(self, node: ast.AST) -> Scope:
         """Lexical scope of a node (module scope when unknown)."""
@@ -197,6 +287,32 @@ class TaintTracker:
     def in_branch(self, node: ast.AST) -> bool:
         """True when the node only runs on some paths (if/loop/try body)."""
         return self._node_branch.get(id(node), False)
+
+    def in_conditional(self, node: ast.AST) -> bool:
+        """True inside an if/elif/else, conditional expression, or try arm."""
+        return self._node_cond.get(id(node), False)
+
+    def loop_iterator(self, node: ast.AST) -> ast.AST | None:
+        """The iterable of the innermost loop ``node`` sits in, if any."""
+        if not self._node_loop.get(id(node), False):
+            return None
+        return self._node_loop_iter.get(id(node))
+
+    # ------------------------------------------------------------------
+    # Control-flow snapshots
+    # ------------------------------------------------------------------
+
+    def snapshot(self) -> "_Bindings":
+        """Freeze the live bindings so a sibling path can start from them."""
+        return self._b.copy()
+
+    def restore(self, state: "_Bindings") -> None:
+        """Replace the live bindings with a previously frozen state."""
+        self._b = state
+
+    def merge_path(self, other: "_Bindings") -> None:
+        """Merge a sibling path's bindings into the live state."""
+        self._b.merge_path(other)
 
     def _candidates(self, store: Iterable[Key], name: str,
                     node: ast.AST | None, scope: Scope | None) -> Iterator[Key]:
@@ -326,6 +442,13 @@ class TaintTracker:
         """Resolve TaintOrigin from an AST node if it contains taint."""
         if isinstance(node, ast.FormattedValue):
             return self.get_taint_origin_of_node(node.value)
+        if isinstance(node, ast.IfExp):
+            # Either arm can be the value that runs, so taint on one is taint.
+            for arm in (node.body, node.orelse):
+                origin = self.get_taint_origin_of_node(arm)
+                if origin:
+                    return origin
+            return None
         if isinstance(node, ast.Name):
             origin = self._get(self._b.tainted, node.id, node)
             return origin if origin else None
@@ -337,9 +460,9 @@ class TaintTracker:
                 return origin
             if isinstance(node.func, ast.Name):
                 # Result of a local function that returns tainted data.
-                func_origin = self._get(self._func_returns, node.func.id, node)
-                if func_origin:
-                    return func_origin
+                summary = self._get(self._func_summaries, node.func.id, node)
+                if summary and summary.origin:
+                    return summary.origin
             # Method call on tainted object: e.g. now.isoformat(), datetime.now().strftime(...)
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
@@ -448,9 +571,10 @@ class TaintTracker:
             self._b.merge(buf)
             self._label_origin(key, var_name)
             if in_branch:
+                # Nothing extra for ``tools`` here: PCL004 already reads the
+                # branch flag, and the path merge clears it when both arms
+                # bind the name to the same expression.
                 self._b.branch.add(key)
-                if var_name == "tools":
-                    self._b.tools_mutated.add(key)
 
     def _label_origin(self, key: Key, var_name: str) -> None:
         """Record which variable an origin was bound to (for diagnostics/debugging)."""
@@ -516,7 +640,7 @@ class TaintTracker:
 
         # 4. Calls
         if isinstance(value, ast.Call):
-            if self._is_set_call(value):
+            if self._is_set_call(value) or self.returns_set(value):
                 buf.sets.add(key)
                 if var_name == "tools":
                     buf.tools_mutated.add(key)
@@ -528,11 +652,12 @@ class TaintTracker:
                 self._track_json_and_branch(var_name, value, scope, buf)
                 return
 
-            # Check if list constructed from set: list(my_set)
+            # Check if list constructed from set: list(my_set) or list(helper())
             if isinstance(value.func, ast.Name) and value.func.id == "list" and value.args:
                 arg = value.args[0]
                 if (isinstance(arg, ast.Name) and self.is_set_variable(arg.id, arg)) \
-                        or isinstance(arg, (ast.Set, ast.SetComp)):
+                        or isinstance(arg, (ast.Set, ast.SetComp)) \
+                        or self.returns_set(arg):
                     buf.tools_mutated.add(key)
 
             if self._is_json_dumps(value) and not _has_sort_keys(value):
@@ -589,6 +714,15 @@ class TaintTracker:
             self._track_json_and_branch(var_name, value, scope, buf)
             return
 
+        # 8b. Conditional expression: either arm can be the value that runs
+        if isinstance(value, ast.IfExp):
+            for arm in (value.body, value.orelse):
+                arm_buf = _Bindings()
+                self._track_target_value(node, var_name, arm, arm_buf)
+                buf.merge_path(arm_buf)
+            self._track_json_and_branch(var_name, value, scope, buf)
+            return
+
         # 9. General taint origin
         origin = self.get_taint_origin_of_node(value)
         if origin:
@@ -612,6 +746,11 @@ class TaintTracker:
         for sub in ast.walk(node):
             if isinstance(sub, ast.Call) and self._is_json_dumps(sub) and not _has_sort_keys(sub):
                 out.add(id(sub))
+            elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                # A helper's unsorted dumps flows to whoever calls it.
+                summary = self._get(self._func_summaries, sub.func.id, sub)
+                if summary:
+                    out |= set(summary.json_flows)
             elif isinstance(sub, ast.Name):
                 flows = self._get(self._b.json_flows, sub.id, sub)
                 if flows:
@@ -655,7 +794,8 @@ class TaintTracker:
                 attr = node.value.func.attr
                 caller = node.value.func.value
                 if isinstance(caller, ast.Name):
-                    if attr in ("append", "extend", "insert") and self.in_branch(node):
+                    if attr in ("append", "extend", "insert") \
+                            and self._mutation_is_non_deterministic(node):
                         self.mark_tools_mutated(caller.id, caller)
                     if attr == "append" and node.value.args:
                         lst = self._get(self._b.lists, caller.id, caller)
@@ -669,14 +809,43 @@ class TaintTracker:
                         if isinstance(arg, ast.Name) and self.is_set_variable(arg.id, arg):
                             self.mark_tools_mutated(caller.id, caller)
 
+    def _mutation_is_non_deterministic(self, node: ast.AST) -> bool:
+        """Whether appending here can change the result between runs.
+
+        A conditional append changes which elements exist. A loop append over
+        a list literal, a tuple, or ``range`` visits items in a fixed order
+        and so leaves the list exactly as deterministic as it started.
+        """
+        if self.in_conditional(node):
+            return True
+        if not self.in_branch(node):
+            return False
+        return not self._static_loop_iterator(node)
+
+    def _static_loop_iterator(self, node: ast.AST) -> bool:
+        """True when the enclosing loop iterates something with fixed order."""
+        iterator = self.loop_iterator(node)
+        if iterator is None:
+            return False
+        if isinstance(iterator, (ast.List, ast.Tuple, ast.ListComp)):
+            return True
+        if isinstance(iterator, ast.Name):
+            return self._get(self._b.lists, iterator.id, iterator) is not None
+        return (isinstance(iterator, ast.Call)
+                and isinstance(iterator.func, ast.Name)
+                and iterator.func.id == "range")
+
     # ------------------------------------------------------------------
     # Function-return taint (one level of inter-procedural flow)
     # ------------------------------------------------------------------
 
     def build_function_returns(self, tree: ast.AST) -> bool:
-        """Resolve taint origins produced by ``return`` statements.
+        """Resolve the summary each function's ``return`` statements produce.
 
-        Returns True when a new function return origin was recorded.
+        Returns True when at least one summary changed. The caller iterates
+        until this comes back False: a function declared before its callee
+        cannot be resolved until the callee's summary exists, so each pass
+        closes one more link of a chain, in either declaration order.
         """
         returns: dict[Scope, list[ast.AST]] = {}
         defs: dict[Scope, list[str]] = {}
@@ -689,19 +858,43 @@ class TaintTracker:
         changed = False
         for def_scope, names in defs.items():
             for name in names:
-                fn_scope = def_scope + (name,)
-                origin = None
-                for ret in returns.get(fn_scope, ()):
-                    origin = self.get_taint_origin_of_node(ret)
-                    if origin:
-                        break
-                if origin is None:
-                    continue
+                summary = self._summarize_returns(
+                    returns.get(def_scope + (name,), ()))
                 func_key = (def_scope, name)
-                if self._func_returns.get(func_key) != origin:
-                    self._func_returns[func_key] = origin
+                if self._func_summaries.get(func_key) != summary:
+                    self._func_summaries[func_key] = summary
                     changed = True
         return changed
+
+    def _summarize_returns(self, values: Iterable[ast.AST]) -> FuncSummary:
+        """Fold every ``return`` in one function into a single summary."""
+        origin: TaintOrigin | None = None
+        is_set = False
+        flows: set[int] = set()
+        for value in values:
+            if origin is None:
+                origin = self.get_taint_origin_of_node(value)
+            if not is_set:
+                is_set = self._value_is_set(value)
+            flows |= self._unsorted_json_nodes(value)
+        return FuncSummary(origin=origin, is_set=is_set,
+                           json_flows=frozenset(flows))
+
+    def _value_is_set(self, value: ast.AST) -> bool:
+        if isinstance(value, (ast.Set, ast.SetComp)):
+            return True
+        if isinstance(value, ast.Call):
+            return self._is_set_call(value) or self.returns_set(value)
+        if isinstance(value, ast.Name):
+            return self.is_set_variable(value.id, value)
+        return False
+
+    def returns_set(self, node: ast.AST) -> bool:
+        """True when ``node`` is a call whose callee returns a set."""
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            return False
+        summary = self._get(self._func_summaries, node.func.id, node)
+        return bool(summary and summary.is_set)
 
     # ------------------------------------------------------------------
     # Call predicates
@@ -752,9 +945,9 @@ class TaintTracker:
             if origin:
                 return origin
             if isinstance(node.func, ast.Name):
-                func_origin = self._get(self._func_returns, node.func.id, node)
-                if func_origin:
-                    return func_origin
+                summary = self._get(self._func_summaries, node.func.id, node)
+                if summary and summary.origin:
+                    return summary.origin
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
                 if caller_origin:

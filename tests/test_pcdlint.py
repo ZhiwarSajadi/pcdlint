@@ -427,10 +427,15 @@ client.chat.completions.create(model="gpt-4", messages=messages)
     "random.randrange(10)",
     "secrets.token_hex(16)",
     "secrets.token_urlsafe(16)",
+    "secrets.token_bytes(16)",
     "os.urandom(16)",
+    "os.getpid()",
+    "time.time_ns()",
+    "random.choices(['a', 'b'], k=2)",
+    "random.sample(['a', 'b'], k=2)",
 ])
-def test_pcl001_recognizes_all_15_taint_sources(call_expr: str) -> None:
-    """PCL001: All 15 spec taint sources are detected at prefix position."""
+def test_pcl001_recognizes_all_20_taint_sources(call_expr: str) -> None:
+    """PCL001: Every registered taint source is detected at prefix position."""
     source = f'''
 import datetime, time, uuid, random, secrets, os
 from datetime import datetime, date
