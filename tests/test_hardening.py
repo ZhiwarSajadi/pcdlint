@@ -1215,6 +1215,24 @@ def test_pcl005_is_a_known_rule_id_with_a_description() -> None:
     assert RULE_SHORT_DESCRIPTIONS["PCL005"]
 
 
+# --- P2-2: judge the value the call used, not the final one ---------------
+
+def test_pcl001_sees_the_value_the_call_actually_used() -> None:
+    """p holds a tainted prefix when the call runs and a static one after.
+
+    Tracking finishes before any rule runs, so the rule used to read p's
+    *final* value and the call looked clean.
+    """
+    source = (
+        "from datetime import datetime\n"
+        "SYSTEM_PROMPT = 'rules ' * 30\n"
+        "p = f'{datetime.now()}' + SYSTEM_PROMPT\n"
+        "client.messages.create(model='m', system=p, messages=[])\n"
+        "p = SYSTEM_PROMPT\n"
+    )
+    assert "PCL001" in _codes(source), _codes(source)
+
+
 # --- P2-3: marks set by pass 0 must survive pass 1 ------------------------
 
 def test_pcl004_survives_a_second_tracking_pass() -> None:
@@ -1244,5 +1262,20 @@ def test_pcl001_from_an_augmented_assignment_survives_a_second_pass() -> None:
         "prompt = SYSTEM_PROMPT\n"
         "prompt += f'{datetime.now()}'\n"
         "client.messages.create(model='m', system=prompt, messages=[])\n"
+    )
+    assert "PCL001" in _codes(source), _codes(source)
+
+
+def test_a_call_inside_a_function_still_sees_module_data_defined_after_it() -> None:
+    """A function's execution point is unknowable, so it keeps the whole-file view.
+
+    Freezing at the `def` would be wrong -- the module-level `p` below does
+    not exist yet when the body is walked.
+    """
+    source = (
+        "from datetime import datetime\n"
+        "def handler(client):\n"
+        "    client.messages.create(model='m', system=p, messages=[])\n"
+        "p = f'{datetime.now()}' + 'STATIC RULES ' * 30\n"
     )
     assert "PCL001" in _codes(source), _codes(source)

@@ -2,6 +2,7 @@
 
 import ast
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import TypeVar
 
@@ -336,6 +337,43 @@ class TaintTracker:
         # ``import random as rnd`` and ``from uuid import uuid4 as u`` still
         # resolve back to the module they came from.
         self._imports: dict[str, str] = {}
+        # Statement id -> ids of the LLM calls worth snapshotting, and the
+        # snapshots themselves. Rules must judge a call against the state it
+        # ran in, not the state the file ended in; see freeze_for()/at().
+        self._sink_calls: dict[int, list[int]] = {}
+        self._frozen: dict[int, _Bindings] = {}
+
+    def set_sink_calls(self, mapping: dict[int, list[int]]) -> None:
+        """Tell the tracker which calls to snapshot, and under which statement."""
+        self._sink_calls = mapping
+
+    def freeze_for(self, node: ast.AST) -> None:
+        """Snapshot the live bindings for every call ``node`` is about to run.
+
+        Called just before the statement is tracked, because that is the
+        state its arguments are evaluated in. Re-running each pass overwrites
+        the earlier snapshot, so the last pass wins.
+        """
+        for call_id in self._sink_calls.get(id(node), ()):
+            self._frozen[call_id] = self._b.copy()
+
+    @contextmanager
+    def at(self, node: ast.AST) -> Iterator[None]:
+        """Resolve against the bindings ``node`` was recorded with, if any.
+
+        A call with no snapshot -- inside a function, whose execution point
+        nobody can know -- falls through to the live, whole-file state.
+        """
+        snapshot = self._frozen.get(id(node))
+        if snapshot is None:
+            yield
+            return
+        live = self._b
+        self._b = snapshot.copy()
+        try:
+            yield
+        finally:
+            self._b = live
 
     # ------------------------------------------------------------------
     # Scopes and branch positions

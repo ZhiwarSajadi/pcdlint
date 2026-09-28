@@ -18,6 +18,40 @@ PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "c
 _SINK_METHODS = frozenset({"create", "parse", "stream"})
 _SINK_RESOURCES = frozenset({"completions", "messages", "responses"})
 
+
+def call_parts(node: ast.Call) -> list[str]:
+    """Attribute chain of ``node.func``, outermost attribute first."""
+    parts: list[str] = []
+    current: ast.expr = node.func
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    return parts
+
+
+def is_llm_api_call(node: ast.Call) -> bool:
+    """True for a documented Anthropic or OpenAI entry point.
+
+    Both halves must match exactly. Substring matching used to accept
+    ``db.messages.create_index`` and ``x.completions.recreate`` while missing
+    ``chat.completions.parse``, which never contains "create" at all.
+
+    There is no keyword fallback either: ``messages=`` plus ``model=`` is what
+    any local ``def render(messages, model)`` looks like, and treating it as a
+    sink means judging a plain helper's arguments as prompt prefixes. A
+    bespoke wrapper is a name this linter cannot know.
+    """
+    parts = call_parts(node)
+    return (len(parts) >= 2
+            and parts[0] in _SINK_METHODS
+            and parts[1] in _SINK_RESOURCES)
+
+
+def is_anthropic_sink(node: ast.Call) -> bool:
+    """True for the Anthropic ``messages`` resource (create/stream/beta)."""
+    parts = call_parts(node)
+    return len(parts) >= 2 and parts[1] == "messages"
+
 # Every rule this engine can emit. Selectors and disable comments are validated
 # against it so a typo can never silently switch a rule off (or on).
 KNOWN_RULE_IDS: frozenset = frozenset(
@@ -97,7 +131,15 @@ class RuleEngine:
         self._diagnostics = []
         self.prepare(tree)
         for node in ast.walk(tree):
-            self.check_node(node)
+            if isinstance(node, ast.Call):
+                # Judge the call against the bindings it ran with. Tracking
+                # covers the whole file before any rule sees it, so without
+                # this a name rebound after the call would be read as its
+                # argument.
+                with self.tracker.at(node):
+                    self.check_node(node)
+            else:
+                self.check_node(node)
         return self._diagnostics
 
     def _add(self, lineno: int, col_offset: int, rule_id: str, rule_name: str,
@@ -137,37 +179,12 @@ class RuleEngine:
         self._check_pcl004(node)
 
     @staticmethod
-    def _call_parts(node: ast.Call) -> list[str]:
-        """Attribute chain of ``node.func``, outermost attribute first."""
-        parts: list[str] = []
-        current: ast.expr = node.func
-        while isinstance(current, ast.Attribute):
-            parts.append(current.attr)
-            current = current.value
-        return parts
+    def _is_llm_api_call(node: ast.Call) -> bool:
+        return is_llm_api_call(node)
 
-    def _is_llm_api_call(self, node: ast.Call) -> bool:
-        # Both halves must match exactly. Substring matching used to accept
-        # `db.messages.create_index` and `x.completions.recreate` while
-        # missing `chat.completions.parse`, which never contains "create" at
-        # all.
-        #
-        # No keyword fallback either. ``messages=`` plus ``model=`` is what
-        # any local ``def render(messages, model)`` looks like, and treating
-        # it as a sink means judging a plain helper's arguments as prompt
-        # prefixes. The shapes below cover Anthropic, OpenAI chat and OpenAI
-        # responses; a bespoke wrapper is a name this linter cannot know.
-        parts = self._call_parts(node)
-        return (len(parts) >= 2
-                and parts[0] in _SINK_METHODS
-                and parts[1] in _SINK_RESOURCES)
-
-    @classmethod
-    def _is_anthropic_sink(cls, node: ast.Call) -> bool:
-        """True for the Anthropic `messages` resource (create/stream/beta)."""
-        parts = cls._call_parts(node)
-        return len(parts) >= 2 and parts[1] == "messages"
-
+    @staticmethod
+    def _is_anthropic_sink(node: ast.Call) -> bool:
+        return is_anthropic_sink(node)
     @staticmethod
     def _keyword_node(node: ast.Call, name: str) -> ast.AST | None:
         for kw in node.keywords:

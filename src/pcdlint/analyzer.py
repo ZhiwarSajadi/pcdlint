@@ -7,7 +7,7 @@ from typing import cast
 
 from pcdlint import config, disables
 from pcdlint.models import Diagnostic
-from pcdlint.rules import RuleEngine
+from pcdlint.rules import RuleEngine, is_llm_api_call
 from pcdlint.taint import TaintTracker
 
 SKIP_DIRS: set[str] = {
@@ -38,6 +38,30 @@ def _child_stmts(node: ast.AST) -> list:
     return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.stmt)]
 
 
+def _sink_calls(tree: ast.AST) -> dict[int, list[int]]:
+    """Statement id -> ids of the LLM calls inside it worth snapshotting.
+
+    Only statements that run at module level are recorded. A call inside a
+    function has no knowable execution point -- its body is walked where the
+    ``def`` sits, long before the module-level names it reads may be bound --
+    so those keep the whole-file view instead of a point in time.
+    """
+    out: dict[int, list[int]] = {}
+    stack: list[tuple[ast.AST, int | None, bool]] = [(tree, None, False)]
+    while stack:
+        node, stmt_id, nested = stack.pop()
+        if isinstance(node, ast.stmt):
+            stmt_id = id(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            nested = True
+        if (not nested and stmt_id is not None
+                and isinstance(node, ast.Call) and is_llm_api_call(node)):
+            out.setdefault(stmt_id, []).append(id(node))
+        for child in ast.iter_child_nodes(node):
+            stack.append((child, stmt_id, nested))
+    return out
+
+
 def _track_tree(tracker: TaintTracker, tree: ast.AST) -> None:
     """Walk statements in execution order, merging sibling control-flow paths.
 
@@ -46,6 +70,7 @@ def _track_tree(tracker: TaintTracker, tree: ast.AST) -> None:
     recorded on the ``try`` path from being erased by its handler, and what
     lets two arms that bind the same expression be recognised as equal.
     """
+    tracker.set_sink_calls(_sink_calls(tree))
     for pass_no in range(_MAX_PASSES):
         _walk_stmts(tracker, _child_stmts(tree), pass_no)
         if not tracker.build_function_returns(tree):
@@ -54,6 +79,9 @@ def _track_tree(tracker: TaintTracker, tree: ast.AST) -> None:
 
 def _walk_stmts(tracker: TaintTracker, stmts: list, pass_no: int) -> None:
     for stmt in stmts:
+        # Before the statement runs: its own arguments are evaluated in the
+        # state that exists when it starts, not after it has rebound names.
+        tracker.freeze_for(stmt)
         if isinstance(stmt, ast.If):
             _track_if(tracker, stmt, pass_no)
         elif isinstance(stmt, _TRY_NODES):

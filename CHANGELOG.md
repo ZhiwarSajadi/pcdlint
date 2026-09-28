@@ -30,6 +30,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Rules now judge a call against the bindings it ran with, not the ones the
+  file ended up with. Tracking covers the whole file before any rule sees
+  it, so a name rebound *after* an LLM call made that call look clean:
+  `p = ...`, then `create(system=p)`, then `p = STATIC` reported nothing.
+  The state at each module-level sink statement is snapshotted during the
+  walk and the rules resolve against it. A call inside a function is
+  deliberately left alone -- its execution point is unknowable, and freezing
+  it where the `def` sits would hide module-level names bound after the
+  definition.
 - Marks set on the first tracking pass survive the later passes. Any file
   with a local helper function needs more than one pass, and each pass
   rebinds names with a plain `Assign` -- which cleared `tools_mutated` and
