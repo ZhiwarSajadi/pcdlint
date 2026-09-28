@@ -2,12 +2,14 @@
 
 Four scopes are supported:
 
-===============================  =============================================
-``... # pcdlint: disable``       that line, every rule
-``... # pcdlint: disable=PCL001``  that line, the named rules only
-``# pcdlint: disable``           whole file (comment alone on its line)
-``# pcdlint: disable=PCL002``    whole file, the named rules only
-===============================  =============================================
+============================================  =============================
+Form                                          Scope
+============================================  =============================
+``... # pcdlint: disable``                    that line, every rule
+``... # pcdlint: disable=PCL001,PCL003``      that line, the named rules only
+``# pcdlint: disable`` above the first stmt   whole file
+``# pcdlint: disable`` below it               the next line of code
+============================================  =============================
 
 Comments are found with :mod:`tokenize`, never by scanning raw text, so the
 marker appearing inside a string literal is data and does nothing. A marker
@@ -18,6 +20,11 @@ The marker may sit anywhere in a comment, with any spacing, so it can share
 one token with another pragma (``# type: ignore  # pcdlint: disable``) or be
 written unpadded (``#pcdlint:disable``). It must still be a complete word --
 ``# pcdlint: disable-all`` and prose mentioning the keyword do not count.
+
+Only a marker *above* the first statement of the file is file-scoped. The
+same marker written further down belongs to the line of code beneath it,
+which is what someone reaching for eslint's habit expects, and what keeps
+one line from muting every other finding in the file.
 """
 
 import io
@@ -83,6 +90,47 @@ class DisableSet:
                 or self._hit(self.file_rules, rule_id))
 
 
+# Token types that may appear above the first statement without ending the
+# file header.
+_HEADER_NOISE = frozenset({
+    tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE,
+    tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER,
+})
+
+
+def _header_last_row(tokens: list, line_count: int) -> int:
+    """Last line number that still counts as the file header.
+
+    The header runs through the module docstring (a statement, but part of
+    the header all the same) and any comments before the first real one.
+    A standalone marker there disables the whole file, which is where it has
+    always lived and where it is unambiguous.
+    """
+    expect_docstring = True
+    for tok in tokens:
+        if tok.type in _HEADER_NOISE:
+            continue
+        if expect_docstring and tok.type == tokenize.STRING:
+            expect_docstring = False
+            continue
+        return tok.start[0] - 1
+    # Nothing but comments, blanks and an optional docstring: all header.
+    return line_count
+
+
+def _next_code_row(lines: list[str], row: int) -> int | None:
+    """1-based number of the next line below ``row`` that holds code.
+
+    Blank and comment-only lines are stepped over: a marker separated from
+    its target by a blank line still means the code underneath it.
+    """
+    for index in range(row, len(lines)):
+        text = lines[index].strip()
+        if text and not text.startswith("#"):
+            return index + 1
+    return None
+
+
 def parse(source: str) -> DisableSet:
     """Extract every disable comment from ``source``."""
     # Fast path: the overwhelming majority of files never mention pcdlint at
@@ -95,24 +143,34 @@ def parse(source: str) -> DisableSet:
     file_rules: set[str] = set()
     line_rules: dict[int, set[str]] = {}
     try:
-        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-            if tok.type != tokenize.COMMENT:
-                continue
-            rules = _marker_rules(tok.string)
-            if rules is None:
-                continue
-            row, col = tok.start
-            line = lines[row - 1] if 0 < row <= len(lines) else ""
-            if line[:col].strip():
-                # Trailing on real code: scoped to this line.
-                line_rules.setdefault(row, set()).update(rules)
-            else:
-                # Alone on its line: scoped to the whole file.
-                file_rules.update(rules)
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
         # ast.parse already succeeded, so this should be unreachable; a
         # suppression parse must never turn a good run into a traceback.
         return DisableSet(frozenset(), {})
+
+    header_last = _header_last_row(tokens, len(lines))
+    for tok in tokens:
+        if tok.type != tokenize.COMMENT:
+            continue
+        rules = _marker_rules(tok.string)
+        if rules is None:
+            continue
+        row, col = tok.start
+        line = lines[row - 1] if 0 < row <= len(lines) else ""
+        if line[:col].strip():
+            # Trailing on real code: scoped to this line.
+            line_rules.setdefault(row, set()).update(rules)
+        elif row <= header_last:
+            # Alone on its line, above the first statement: whole file.
+            file_rules.update(rules)
+        else:
+            # Alone on its line below the header. People coming from eslint
+            # or pylint put it above the code they mean, so that is what it
+            # does here -- rather than silently muting the rest of the file.
+            target = _next_code_row(lines, row)
+            if target is not None:
+                line_rules.setdefault(target, set()).update(rules)
 
     frozen = {row: frozenset(ids) for row, ids in line_rules.items()}
     return DisableSet(frozenset(file_rules), frozen)

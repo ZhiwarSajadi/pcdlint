@@ -149,3 +149,42 @@ def test_marker_followed_by_extra_word_is_not_a_marker() -> None:
         "    system=system,  # pcdlint:disable-all\n",
     )
     assert len(analyze_code(marked, "t.py")) >= 1
+
+
+# --- a standalone marker below the header scopes to the next line ---------
+
+def test_standalone_marker_mid_file_is_not_file_scoped() -> None:
+    """A marker below the first statement used to switch off the whole file.
+
+    Anyone coming from eslint or pylint writes `# pcdlint: disable` on the
+    line above the code they mean; it silently silenced every finding in
+    the file instead.
+    """
+    source = BASE.replace(
+        "client = OpenAI()\n",
+        "client = OpenAI()\n# pcdlint: disable\n",
+    )
+    assert source != BASE, "the marker line was not inserted"
+
+    pcl001 = [d for d in analyze_code(source, "t.py") if d.rule_id == "PCL001"]
+    assert len(pcl001) == 1, (
+        "a mid-file standalone marker must not silence the rest of the file, "
+        f"got {pcl001}"
+    )
+
+
+def test_standalone_marker_directly_above_a_line_suppresses_that_line() -> None:
+    """The next line after a standalone marker is the one it means."""
+    source = BASE.replace(
+        "    system=system,\n",
+        "    # pcdlint: disable\n    system=system,\n",
+    )
+    assert source != BASE, "the marker line was not inserted"
+    assert analyze_code(source, "t.py") == []
+
+
+def test_standalone_marker_at_end_of_file_suppresses_nothing() -> None:
+    """There is no next line, so the marker has nothing to switch off."""
+    source = BASE + "# pcdlint: disable\n"
+    pcl001 = [d for d in analyze_code(source, "t.py") if d.rule_id == "PCL001"]
+    assert len(pcl001) == 1, f"a trailing marker must be inert, got {pcl001}"

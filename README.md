@@ -174,8 +174,16 @@ system = f"Time: {now}\n{STATIC_RULES}"  # pcdlint: disable
 |------|-------|
 | `... # pcdlint: disable` | that line, every rule |
 | `... # pcdlint: disable=PCL001,PCL003` | that line, the named rules only |
-| `# pcdlint: disable` alone on its own line | the whole file |
-| `# pcdlint: disable=PCL002` alone on its own line | the whole file, the named rules only |
+| `# pcdlint: disable` alone, above the first statement of the file | the whole file |
+| `# pcdlint: disable=PCL002` alone, above the first statement | the whole file, the named rules only |
+| `# pcdlint: disable` alone, further down | the next line of code |
+
+Only a marker written above the first statement of the file switches the
+whole file off — that is where it has always lived. The same marker further
+down belongs to the line of code beneath it, so putting it on its own line
+above the call you mean does what you expect instead of muting every other
+finding in the file. Blank and comment-only lines between the marker and its
+target are skipped.
 
 Comments are read with Python's tokenizer, so the same text inside a string
 literal is data and does nothing. A marker naming a rule that does not exist

@@ -6,6 +6,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A `# pcdlint: disable` alone on its own line now switches off **the next
+  line of code** unless it sits above the first statement of the file, where
+  it keeps switching off the whole file as before. It used to be file-scoped
+  wherever it appeared, so the eslint/pylint habit of putting one above the
+  call you meant silently muted every other finding in the file. Blank and
+  comment-only lines between the marker and its target are skipped.
+
 ### Fixed
 
 - Suppression markers no longer have to open the comment. `# type: ignore  #
