@@ -55,8 +55,8 @@ pcdlint check src/ --fix
 pcdlint check src/ --diff origin/main
 
 # Verify against test demo files
-pcdlint check demo_good.py    # Clean case (0 issues)
-pcdlint check demo_buggy.py   # Buggy case (triggers PCL001-PCL004)
+pcdlint check examples/demo_good.py    # Clean case (0 issues)
+pcdlint check examples/demo_buggy.py   # Buggy case (triggers PCL001-PCL004)
 ```
 
 ## Architecture & Code Structure

@@ -22,12 +22,39 @@ def _pyproject() -> dict:
         return tomllib.load(handle)
 
 
-def test_declared_version_matches_the_installed_module():
-    # __version__ is what `pcdlint --version` and SARIF print; pyproject is
-    # what PyPI records. They are edited by hand in two places.
+def test_version_lives_in_exactly_one_place():
+    """The version is written once, in ``pcdlint.__version__``.
+
+    ``__version__`` is what ``pcdlint --version`` and SARIF print; the wheel
+    metadata is what PyPI records. Keeping a literal in both meant editing
+    two files in lockstep, and they drifted, so pyproject now derives its
+    version instead of carrying a copy.
+    """
     from pcdlint import __version__
 
-    assert __version__ == _pyproject()["project"]["version"]
+    project = _pyproject()["project"]
+    assert "version" not in project, (
+        "project.version is static -- it would drift from pcdlint.__version__"
+    )
+    assert "version" in project.get("dynamic", []), (
+        "project.version must be declared dynamic"
+    )
+    assert (_pyproject()["tool"]["setuptools"]["dynamic"]["version"]["attr"]
+            == "pcdlint.__version__")
+    assert re.fullmatch(r"\d+\.\d+\.\d+", __version__), __version__
+
+
+def test_installed_metadata_agrees_with_the_module():
+    """The dynamic version really is what setuptools resolved at install."""
+    from importlib.metadata import version
+
+    from pcdlint import __version__
+
+    assert version("pcdlint") == __version__, (
+        f"installed metadata says {version('pcdlint')!r} but "
+        f"pcdlint.__version__ says {__version__!r} -- reinstall with "
+        "`pip install -e .` after changing the version"
+    )
 
 
 def test_console_scripts_point_at_real_entry_points():

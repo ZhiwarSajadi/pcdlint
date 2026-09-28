@@ -88,7 +88,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/clean/bin/pcdlint" --version
           "$RUNNER_TEMP/clean/bin/pclint" --version
-          "$RUNNER_TEMP/clean/bin/pcdlint" check demo_good.py
+          "$RUNNER_TEMP/clean/bin/pcdlint" check examples/demo_good.py
           "$RUNNER_TEMP/clean/bin/python" -c "import pclint; print(pclint.__version__)"
 
   # One stable check name for branch protection to require. The matrix jobs

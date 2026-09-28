@@ -65,11 +65,12 @@ def _exclude_patterns(path: Path, exclude: frozenset | None) -> frozenset:
 
 
 def _is_excluded(path: Path, rel: str, patterns: frozenset) -> bool:
-    """Whether a glob keeps this file out of the scan.
+    """Whether a glob keeps this file out of a directory walk.
 
     Matched against the bare name and against the path relative to what was
     scanned, so both ``--exclude "*.min.py"`` and ``--exclude "tests/*"``
-    do what they look like.
+    do what they look like. A path named on the command line is never
+    filtered -- see analyze_path_ex.
     """
     if not patterns:
         return False
@@ -328,9 +329,10 @@ def analyze_path_ex(target_path: Path, *,
     if target_path.is_file():
         if target_path.suffix != ".py":
             return [], [f"not a Python file: {target_path}"]
-        if _is_excluded(target_path, _relative_to(target_path, Path.cwd()),
-                        _exclude_patterns(target_path, exclude)):
-            return [], []
+        # No exclude check here: naming a file is asking for that file, and
+        # whether it matched would otherwise depend on how the path was
+        # spelled (relative paths have no root to be relative to). exclude
+        # filters what a directory walk discovers.
         source, error = _read_source(target_path)
         if error:
             return [], [error]

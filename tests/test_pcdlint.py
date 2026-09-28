@@ -246,7 +246,7 @@ def test_demo_good_file_passes_clean() -> None:
 
     from pcdlint.analyzer import analyze_path
 
-    good_path = Path("demo_good.py")
+    good_path = Path("examples/demo_good.py")
     if good_path.exists():
         diags = analyze_path(good_path)
         assert len(diags) == 0, f"Expected 0 diagnostics on demo_good.py, got: {diags}"
@@ -258,7 +258,7 @@ def test_demo_buggy_file_triggers_all_rules() -> None:
 
     from pcdlint.analyzer import analyze_path
 
-    buggy_path = Path("demo_buggy.py")
+    buggy_path = Path("examples/demo_buggy.py")
     if buggy_path.exists():
         diags = analyze_path(buggy_path)
         rule_ids = {d.rule_id for d in diags}
@@ -276,7 +276,7 @@ def test_cli_check_command() -> None:
 
     old_argv = sys.argv
     try:
-        sys.argv = ["pcdlint", "check", "demo_good.py"]
+        sys.argv = ["pcdlint", "check", "examples/demo_good.py"]
         exit_code = main()
         assert exit_code == 0
     finally:
@@ -291,7 +291,7 @@ def test_cli_exit_code_on_errors() -> None:
 
     old_argv = sys.argv
     try:
-        sys.argv = ["pcdlint", "check", "demo_buggy.py"]
+        sys.argv = ["pcdlint", "check", "examples/demo_buggy.py"]
         exit_code = main()
         assert exit_code == 1
     finally:
@@ -574,7 +574,8 @@ def test_cli_json_format_output(capsys: pytest.CaptureFixture) -> None:
 
     old_argv = sys.argv
     try:
-        sys.argv = ["pcdlint", "check", "demo_buggy.py", "--format", "json"]
+        sys.argv = ["pcdlint", "check", "examples/demo_buggy.py",
+                    "--format", "json"]
         main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -597,7 +598,8 @@ def test_cli_fail_on_warn_flag() -> None:
     old_argv = sys.argv
     try:
         # demo_buggy has both errors and warnings
-        sys.argv = ["pcdlint", "check", "demo_buggy.py", "--fail-on-warn"]
+        sys.argv = ["pcdlint", "check", "examples/demo_buggy.py",
+                    "--fail-on-warn"]
         exit_code = main()
         assert exit_code == 1
     finally:

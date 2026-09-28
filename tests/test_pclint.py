@@ -25,7 +25,7 @@ def test_pclint_analyzer_alias() -> None:
     diags = analyze_code("x = 1")
     assert diags == []
 
-    good_path = Path("demo_good.py")
+    good_path = Path("examples/demo_good.py")
     if good_path.exists():
         assert analyze_path(good_path) == []
 
@@ -36,7 +36,7 @@ def test_pclint_cli_alias() -> None:
 
     old_argv = sys.argv
     try:
-        sys.argv = ["pclint", "check", "demo_good.py"]
+        sys.argv = ["pclint", "check", "examples/demo_good.py"]
         exit_code = main()
         assert exit_code == 0
     finally:
@@ -105,3 +105,25 @@ def test_taint_origin_records_variable_name() -> None:
     assert origin.source_call == "datetime.now"
     assert origin.variable_name == "ts"
 
+
+
+def test_pclint_alias_warns_it_is_deprecated() -> None:
+    """The top-level name can clash with any other distribution shipping it.
+
+    The console script keeps working: it maps to pcdlint.cli:main and does
+    not squat on an import name.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-W", "error::DeprecationWarning",
+         "-c", "import pclint"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, (
+        "importing pclint must raise DeprecationWarning when escalated"
+    )
+    assert "deprecated" in result.stderr, result.stderr
+    assert "removed in 1.0" in result.stderr, result.stderr

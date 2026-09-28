@@ -8,7 +8,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pcdlint"
-version = "0.2.0"
+# One place for the version: src/pcdlint/__init__.py. Keeping a literal here
+# too meant two files had to be edited in lockstep, and they drifted.
+dynamic = ["version"]
 description = "Static Taint Linter for Prompt-Cache Determinism"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -73,6 +75,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
 
+[tool.setuptools.dynamic]
+version = {attr = "pcdlint.__version__"}
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-v"]
@@ -85,3 +90,8 @@ line-length = 88
 python_version = "3.10"
 files = ["src"]
 warn_unused_ignores = true
+
+[tool.pcdlint]
+# This repo ships an intentionally broken demo, so `pcdlint check .` has to
+# leave it out. Files you name on the command line are still always checked.
+exclude = ["examples/*"]

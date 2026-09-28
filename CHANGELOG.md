@@ -28,6 +28,24 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Changed
 
+- The version now lives in one place: `pcdlint.__version__`, which
+  `pyproject.toml` reads through `[tool.setuptools.dynamic]`. Bumping a
+  release means editing one file, not two that drift. Version is now
+  `0.3.0`.
+- The `pclint` alias package emits a `DeprecationWarning` on import and goes
+  away in 1.0: the top-level name can clash with any other distribution that
+  ships one. The `pclint` console script is unaffected.
+- `demo_good.py` / `demo_buggy.py` moved to `examples/`, so the repo's own
+  `[tool.pcdlint] exclude = ["examples/*"]` keeps `pcdlint check .` clean on
+  this repository. CI's smoke test, `setup.bat`/`setup.sh` and the test
+  fixtures follow the new path.
+- `exclude` now filters only what a **directory walk** discovers. A file you
+  name on the command line is always analyzed -- otherwise whether it was
+  filtered depended on whether you passed a relative or absolute path.
+- `CLAUDE.md` and `docs/superpowers/` stay in the repo as contributor
+  documentation, and are already absent from the sdist (verified by building
+  one: packages, `tests/`, `README.md`, `LICENSE` only), so no `MANIFEST.in`
+  is needed.
 - Every third-party action is pinned to a commit SHA with a `# vX` comment,
   so a tag cannot be retargeted out from under the build -- including
   `pypa/gh-action-pypi-publish`, which is the one that publishes. Dependabot
@@ -218,5 +236,5 @@ PCL003 unsorted set, PCL004 dynamic tools), text and JSON output, the
 `pclint` alias, and `python -m pcdlint`.
 
 [Unreleased]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ZhiwarSajadi/pcdlint/releases/tag/v0.1.0

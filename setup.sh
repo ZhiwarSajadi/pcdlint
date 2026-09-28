@@ -68,12 +68,12 @@ echo ""
 echo "[5/5] Running verification on demo files..."
 echo ""
 echo "--- Testing Clean / Good Case (demo_good.py) ---"
-$PYTHON_BIN -m pcdlint.cli check demo_good.py
+$PYTHON_BIN -m pcdlint.cli check examples/demo_good.py
 
 echo ""
 echo "--- Testing Buggy Case (demo_buggy.py) ---"
 # Expected to exit with code 1 due to violations
-$PYTHON_BIN -m pcdlint.cli check demo_buggy.py || true
+$PYTHON_BIN -m pcdlint.cli check examples/demo_buggy.py || true
 
 echo ""
 echo "=================================================="

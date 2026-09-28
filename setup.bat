@@ -51,7 +51,7 @@ echo.
 echo [5/5] Running verification on demo files...
 echo.
 echo --- Testing Clean / Good Case (demo_good.py) ---
-python -m pcdlint.cli check demo_good.py
+python -m pcdlint.cli check examples/demo_good.py
 if errorlevel 1 (
     echo ERROR: demo_good.py should produce 0 errors.
     exit /b 1
@@ -59,7 +59,7 @@ if errorlevel 1 (
 
 echo.
 echo --- Testing Buggy Case (demo_buggy.py) ---
-python -m pcdlint.cli check demo_buggy.py
+python -m pcdlint.cli check examples/demo_buggy.py
 if not errorlevel 1 (
     echo ERROR: demo_buggy.py should report violations and exit with code 1.
     exit /b 1

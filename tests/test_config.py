@@ -306,3 +306,46 @@ def test_empty_exclude_is_a_no_op(tmp_path, capsys) -> None:
 
     from pathlib import Path
     assert {Path(n).name for n in names} >= {"keep_me.py", "skip_me.py"}
+
+
+# --- P3-7: repo hygiene ---------------------------------------------------
+
+def test_the_repos_own_config_keeps_the_broken_demo_out_of_a_walk() -> None:
+    """``pcdlint check .`` must not fail on this repo's own demo.
+
+    The examples exist to show the rules firing, so they are excluded by
+    [tool.pcdlint] rather than skipped by default for everyone else.
+    """
+    from pathlib import Path
+
+    from pcdlint.analyzer import analyze_path_ex
+
+    root = Path(__file__).resolve().parents[1]
+    found, errors = analyze_path_ex(root)
+
+    assert errors == [], errors
+    leaked = [d for d in found if "demo_buggy" in d.file_path]
+    assert leaked == [], f"examples/ leaked into a root walk: {leaked}"
+
+
+def test_an_explicitly_named_file_is_never_excluded(tmp_path, capsys) -> None:
+    """exclude filters what a directory walk discovers.
+
+    Naming a file is asking for that file, and whether exclude applied would
+    otherwise depend on how the path was spelled.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pcdlint]\nexclude = ["*.py"]\n', encoding="utf-8")
+    (tmp_path / "app.py").write_text(CODE, encoding="utf-8")
+
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint", "check", str(tmp_path / "app.py"),
+                    "--format", "json"]
+        main()
+    finally:
+        sys.argv = old_argv
+
+    assert json.loads(capsys.readouterr().out), (
+        "an explicitly named file must still be analyzed"
+    )
