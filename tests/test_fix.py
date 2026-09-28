@@ -267,3 +267,75 @@ def test_cli_fix_reports_findings_it_could_not_fix(tmp_path, monkeypatch,
 
     assert "fixed 0 file(s)" in err
     assert "1 finding(s) have no automatic fix" in err
+
+
+def test_cli_fix_leaves_line_endings_alone(tmp_path, monkeypatch) -> None:
+    """--fix rewrites a file; it must not also rewrite its newlines.
+
+    read_text()/write_text() translate through os.linesep, so on Windows an
+    LF-authored file comes back CRLF and shows up in git as a whole-file diff.
+    """
+    target = tmp_path / "sample.py"
+    target.write_bytes(_pcl002_source("json.dumps(payload)").encode("utf-8"))
+    monkeypatch.chdir(tmp_path)
+
+    (code,) = _run_cli(["check", "sample.py", "--fix"])
+
+    fixed = target.read_bytes()
+    assert b"\r" not in fixed, "--fix converted LF line endings to CRLF"
+    assert b"sort_keys=True" in fixed
+    assert code == 0
+
+
+def test_cli_fix_keeps_crlf_line_endings_crlf(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "sample.py"
+    crlf = _pcl002_source("json.dumps(payload)").replace("\n", "\r\n")
+    target.write_bytes(crlf.encode("utf-8"))
+    monkeypatch.chdir(tmp_path)
+
+    (code,) = _run_cli(["check", "sample.py", "--fix"])
+
+    fixed = target.read_bytes()
+    assert fixed.count(b"\r\n") == crlf.count("\r\n")
+    assert b"sort_keys=True" in fixed
+    assert code == 0
+
+
+def test_cli_fix_declines_a_set_whose_elements_cannot_be_ordered(
+        tmp_path, monkeypatch, capsys) -> None:
+    """sorted() on mixed types raises TypeError -- a fix must not ship one."""
+    import sys
+
+    from pcdlint.cli import main
+
+    source = "tags = {1, 'a'}\nprompt = ', '.join(tags)\n" + PCL002_TAIL
+    target = tmp_path / "sample.py"
+    target.write_bytes(source.encode("utf-8"))
+    monkeypatch.chdir(tmp_path)
+
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint", "check", "sample.py", "--fix"]
+        code = main()
+        err = capsys.readouterr().err
+    finally:
+        sys.argv = old_argv
+
+    assert target.read_bytes() == source.encode("utf-8"), (
+        "--fix wrapped the set in sorted(), which raises on {1, 'a'}"
+    )
+    assert "no automatic fix" in err
+    assert code == 1
+
+
+def test_cli_fix_still_repairs_a_set_of_strings(tmp_path, monkeypatch) -> None:
+    """The narrowing rule must not take the common case with it."""
+    target = tmp_path / "sample.py"
+    source = "tags = {'b', 'a'}\nprompt = ', '.join(tags)\n" + PCL002_TAIL
+    target.write_bytes(source.encode("utf-8"))
+    monkeypatch.chdir(tmp_path)
+
+    (code,) = _run_cli(["check", "sample.py", "--fix"])
+
+    assert b"sorted(tags)" in target.read_bytes()
+    assert code == 0

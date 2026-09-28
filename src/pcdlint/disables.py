@@ -4,7 +4,7 @@ Four scopes are supported:
 
 ===============================  =============================================
 ``... # pcdlint: disable``       that line, every rule
-``... # pcdlint: disable=PCL1``  that line, the named rules only
+``... # pcdlint: disable=PCL001``  that line, the named rules only
 ``# pcdlint: disable``           whole file (comment alone on its line)
 ``# pcdlint: disable=PCL002``    whole file, the named rules only
 ===============================  =============================================

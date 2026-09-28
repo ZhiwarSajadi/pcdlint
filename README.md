@@ -34,7 +34,7 @@ system = f"Time: {datetime.now()}\n{STATIC_RULES}"
 
 client.chat.completions.create(
     model="gpt-4",
-    system=system,  # Cache MISS every time!
+    messages=[{"role": "system", "content": system}],  # Cache MISS every time!
 )
 ```
 
@@ -48,7 +48,7 @@ system = f"{STATIC_RULES}\nTime: {datetime.now()}"
 
 client.chat.completions.create(
     model="gpt-4",
-    system=system,  # Cache HIT — prefix bytes match across requests!
+    messages=[{"role": "system", "content": system}],  # Cache HIT — prefix bytes match!
 )
 ```
 
@@ -122,6 +122,9 @@ reported and skipped rather than written.
 finding only when **the line the finding points at** changed — a finding on an
 untouched line stays hidden even if the value it refers to was edited. Pair it
 with `--fix` to repair only what a PR introduced.
+
+A file git does not know about yet counts as wholly new, so every finding in
+it is reported; files your `.gitignore` excludes are left out entirely.
 
 ### Exit codes
 
@@ -201,7 +204,7 @@ jobs:
       - run: pcdlint check src/ --fail-on-warn
       # Findings appear directly on the PR diff via Code Scanning.
       - run: pcdlint check src/ --format sarif > pcdlint.sarif
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: pcdlint.sarif
 ```

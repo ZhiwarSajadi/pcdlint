@@ -10,8 +10,9 @@ from pcdlint.rules import RuleEngine
 from pcdlint.taint import TaintTracker
 
 SKIP_DIRS: set[str] = {
-    ".venv", "venv", "node_modules", ".git", "__pycache__", "build", "dist",
-    ".tox", ".nox", ".mypy_cache", ".ruff_cache", ".eggs", "htmlcov",
+    ".venv", "venv", "env", "node_modules", ".git", "__pycache__", "build",
+    "dist", ".tox", ".nox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    ".eggs", "htmlcov", "site-packages", ".ipynb_checkpoints",
 }
 # Iterations over the AST. Each pass lets assignment tracking see the function
 # summaries resolved by the previous one, so a call chain resolves one link per
@@ -163,8 +164,17 @@ def analyze_code(source_code: str, file_path: str = "") -> list[Diagnostic]:
 
 
 def _read_source(path: Path) -> tuple[str | None, str | None]:
+    """Read a source file as the bytes on disk, minus any UTF-8 BOM.
+
+    Going through bytes rather than ``Path.read_text`` fixes two silent
+    rejections at once: ``utf-8-sig`` drops the leading U+FEFF that
+    ``ast.parse`` rejects (editors do save BOM'd files), and no text-mode
+    translation means CRLF comes back as CRLF -- ast's ``col_offset`` has to
+    describe the bytes that are actually there, and --fix has to write back
+    exactly what it did not touch.
+    """
     try:
-        return path.read_text(encoding="utf-8"), None
+        return path.read_bytes().decode("utf-8-sig"), None
     except UnicodeDecodeError as exc:
         return None, f"cannot decode {path} as UTF-8: {exc}"
     except OSError as exc:

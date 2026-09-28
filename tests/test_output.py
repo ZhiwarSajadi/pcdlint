@@ -201,3 +201,88 @@ def test_diff_accepts_an_explicit_ref(tmp_path, monkeypatch, capsys) -> None:
 
     assert code == 1, out
     assert "PCL001" in out
+
+
+def test_diff_reports_findings_in_an_untracked_new_file(tmp_path, monkeypatch,
+                                                        capsys) -> None:
+    """``git diff REF`` never lists a file nobody has added.
+
+    A brand-new file therefore came back "no findings, exit 0" under --diff
+    -- a clean-looking run for the one file the change just introduced.
+    """
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / "new_file.py").write_text(BUGGY, encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", "new_file.py", "--diff"], capsys)
+
+    assert code == 1, out
+    assert "PCL001" in out
+
+
+def test_diff_still_hides_findings_in_an_ignored_file(tmp_path, monkeypatch,
+                                                      capsys) -> None:
+    """Guard: .gitignore'd files are not part of the change either."""
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / ".gitignore").write_text("scratch.py\n", encoding="utf-8")
+    _git(["add", "."], tmp_path)
+    _git(["commit", "-q", "-m", "ignore"], tmp_path)
+    (tmp_path / "scratch.py").write_text(BUGGY, encoding="utf-8")
+
+    code, _out, _err = _run_cli(["check", "scratch.py", "--diff"], capsys)
+
+    assert code == 0
+
+
+def test_diff_exits_2_when_git_cannot_run_at_all(tmp_path, monkeypatch,
+                                                 capsys) -> None:
+    """git missing must not read as "no changed lines, no findings"."""
+    from pcdlint import cli
+
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / "sample.py").write_text(BUGGY, encoding="utf-8")
+
+    class _NoGit:
+        @staticmethod
+        def run(*_args, **_kwargs):
+            raise OSError("git is not installed")
+
+    monkeypatch.setattr(cli, "subprocess", _NoGit())
+
+    code, _out, err = _run_cli(["check", "sample.py", "--diff"], capsys)
+
+    assert code == 2
+    assert "git" in err.lower()
+
+
+def test_diff_parser_skips_malformed_hunk_headers() -> None:
+    """A hunk header git never emits must be dropped, not raise."""
+    from pathlib import Path
+
+    from pcdlint.cli import _parse_added_lines
+
+    root = Path.cwd().resolve()
+    patch = (
+        "+++ sample.py\n"
+        "@@ -1,2\n"              # truncated
+        "@@ -1,2 @@\n"           # no new-file range
+        "@@ -1,2 +nope,3 @@\n"   # not a number
+        "@@ -1,2 +3,1 @@\n"      # the only valid header
+    )
+
+    assert _parse_added_lines(patch, root) == {
+        (root / "sample.py").resolve().as_posix(): {3}
+    }
+
+
+def test_sarif_uri_keeps_a_path_outside_the_working_tree(tmp_path,
+                                                         monkeypatch) -> None:
+    """Code Scanning wants a relative URI, but a path it cannot relativize
+    must survive as given rather than crash or be dropped."""
+    from pathlib import Path
+
+    from pcdlint.cli import _sarif_uri
+
+    monkeypatch.chdir(tmp_path)
+    outside = Path(Path.cwd().anchor) / "somewhere" / "other.py"
+
+    assert _sarif_uri(str(outside)) == outside.as_posix()

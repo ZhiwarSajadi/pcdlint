@@ -39,3 +39,35 @@ def test_main_module_exits_one_when_findings_exist(tmp_path, monkeypatch,
 
     assert _run(["pcdlint", "check", "sample.py"]) == 1
     assert "PCL001" in capsys.readouterr().out
+
+
+def test_a_real_path_named_check_is_not_swallowed_as_a_subcommand(
+        tmp_path, monkeypatch, capsys) -> None:
+    """``check`` is only a subcommand when nothing on disk is called that.
+
+    Otherwise the token was stripped, the default path ``.`` was substituted,
+    and ``pcdlint check`` silently linted a different tree than the one the
+    argument named.
+    """
+    (tmp_path / "check").mkdir()
+    (tmp_path / "check" / "sample.py").write_text(BUGGY, encoding="utf-8")
+    # Present so linting "." instead of "check" is visibly a different run.
+    (tmp_path / "broken.py").write_text("def (:\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    code = _run(["pcdlint", "check"])
+    captured = capsys.readouterr()
+
+    assert code == 1, (captured.out, captured.err)
+    assert "PCL001" in captured.out
+    assert "broken.py" not in captured.err
+
+
+def test_check_with_no_paths_lints_the_working_directory(tmp_path, monkeypatch,
+                                                        capsys) -> None:
+    """Guard: with no ``check`` path on disk, the default stays ``.``."""
+    (tmp_path / "sample.py").write_text(BUGGY, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert _run(["pcdlint", "check"]) == 1
+    assert "PCL001" in capsys.readouterr().out

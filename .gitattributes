@@ -1,0 +1,21 @@
+# pcdlint's --fix splices byte spans, not line endings: it rewrites exactly
+# the characters a rule asked it to change and nothing else. Keeping the
+# working tree's line endings out of that question means a fix run on Windows
+# cannot show up on Linux as a whole-file diff.
+* text=auto
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.json  text eol=lf
+
+# Batch files are only functional with CRLF.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+*.png   binary
+*.ico   binary
+*.whl   binary

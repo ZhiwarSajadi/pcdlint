@@ -606,3 +606,222 @@ def test_pcl004_direct_function_return_of_set() -> None:
         client.messages.create(model="m", messages=[], tools=tools)
     '''
     assert _codes(source) == ["PCL004"]
+
+# --- PCL003 only fires when the set iteration reaches a prompt -----------
+
+def test_pcl003_not_reported_when_set_never_reaches_a_prompt() -> None:
+    """A log line joining a set is not a prompt; PCL003 is named for prompts.
+
+    It is an ERROR with an autofix, so firing file-wide turns every
+    ``", ".join(some_set)`` in the tree into a build failure.
+    """
+    source = '''
+        tags = {"a", "b"}
+        line = ", ".join(tags)
+        print(line)
+    '''
+    assert _codes(source) == []
+
+
+def test_pcl003_still_reported_when_set_reaches_the_messages() -> None:
+    source = '''
+        tags = {"a", "b"}
+        prompt = ", ".join(tags)
+        client.messages.create(model="m", messages=[
+            {"role": "user", "content": prompt}])
+    '''
+    assert _codes(source) == ["PCL003"]
+
+
+def test_pcl003_still_reported_when_joined_inline_in_the_call() -> None:
+    source = '''
+        tags = {"a", "b"}
+        client.messages.create(model="m", messages=[
+            {"role": "user", "content": ", ".join(tags)}])
+    '''
+    assert _codes(source) == ["PCL003"]
+
+
+def test_pcl003_still_reported_for_an_interpolation_in_the_messages() -> None:
+    source = '''
+        tags = {"a", "b"}
+        prompt = f"Tags: {tags}"
+        client.messages.create(model="m", system=prompt)
+    '''
+    assert _codes(source) == ["PCL003"]
+
+
+# --- json.dumps reachability: inline and via an import alias -------------
+
+def test_pcl002_reported_when_dumps_is_passed_inline_to_the_call() -> None:
+    """json_flows is only populated by assignment, so an inline payload
+    produced nothing to look up and the finding vanished."""
+    source = '''
+        import json
+        client.messages.create(model="m", messages=[
+            {"role": "user", "content": json.dumps({"b": 1, "a": 2})}])
+    '''
+    assert _codes(source) == ["PCL002"]
+
+
+def test_pcl002_sees_a_dumps_imported_by_name() -> None:
+    """The tracker accepts bare ``dumps`` but the rule demanded ``json.dumps``,
+    so the provenance was recorded and then never reported."""
+    source = '''
+        from json import dumps
+        payload = dumps({"b": 1, "a": 2})
+        client.messages.create(model="m", messages=[
+            {"role": "user", "content": payload}])
+    '''
+    assert _codes(source) == ["PCL002"]
+
+
+def test_pcl002_still_silent_when_the_payload_never_reaches_a_prompt() -> None:
+    source = '''
+        import json
+        audit = json.dumps({"b": 1, "a": 2})
+        print(audit)
+    '''
+    assert _codes(source) == []
+
+
+def test_pcl002_sees_dumps_through_a_module_alias() -> None:
+    """``import json as J`` spells the same non-determinism as ``json.dumps``."""
+    source = '''
+        import json as J
+        payload = J.dumps({"b": 1, "a": 2})
+        client.messages.create(model="m", messages=[
+            {"role": "user", "content": payload}])
+    '''
+    assert _codes(source) == ["PCL002"]
+
+
+# --- what is allowed to count as a static prefix solid -------------------
+
+def test_pcl001_not_silenced_by_an_uppercase_dynamic_value() -> None:
+    """An UPPER_CASE name was accepted as static text on its name alone.
+
+    So renaming a dynamic value to shouty case -- or merely having one the
+    taint sources do not model, like ``input()`` -- hid a genuine prefix
+    taint sitting right after it.
+    """
+    source = '''
+        from datetime import datetime
+        GREETING = input("hdr: ")
+        now = datetime.now()
+        system = f"{GREETING}Rules and instructions. " + f"{now}"
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == ["PCL001"]
+
+
+def test_pcl001_still_spared_by_a_known_static_uppercase_prompt() -> None:
+    """Guard: an uppercase *string constant* is still a static solid."""
+    source = '''
+        from datetime import datetime
+        STATIC_RULES = "You are a helpful assistant. Follow the rules. "
+        now = datetime.now()
+        system = f"{STATIC_RULES}Time: {now}"
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == []
+
+
+def test_pcl001_still_spared_by_a_listed_static_prefix_name() -> None:
+    """Guard: the curated STATIC_PREFIX_NAMES list keeps working."""
+    source = '''
+        from datetime import datetime
+        SYSTEM_PROMPT = build_prompt()
+        now = datetime.now()
+        system = f"{SYSTEM_PROMPT}Time: {now}"
+        client.messages.create(model="m", system=system)
+    '''
+    assert _codes(source) == []
+
+
+# --- what counts as an LLM sink ------------------------------------------
+
+def test_pcl001_not_reported_for_a_local_helper_that_merely_takes_messages() -> None:
+    """``messages=`` plus ``model=`` is not what makes a call an LLM call.
+
+    Any local helper with those two keyword names was being treated as a
+    sink, so its arguments were judged as prompt prefixes.
+    """
+    source = '''
+        from datetime import datetime
+        now = datetime.now()
+        def render(messages, model):
+            return messages[0]
+        render(messages=[{"role": "user", "content": f"Time: {now}"}], model="m")
+    '''
+    assert _codes(source) == []
+
+
+def test_pcl001_still_fires_on_the_real_sdk_shapes() -> None:
+    """Guard: dropping the keyword fallback must not cost the known sinks."""
+    source = '''
+        from datetime import datetime
+        now = datetime.now()
+        client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": f"T {now}"}])
+        client.messages.create(
+            model="m", messages=[{"role": "user", "content": f"T {now}"}])
+        client.responses.create(
+            model="m", messages=[{"role": "user", "content": f"T {now}"}])
+    '''
+    assert _codes(source) == ["PCL001", "PCL001", "PCL001"]
+
+
+# --- cache and vendored directories are not source -----------------------
+
+def test_cache_directories_are_not_linted(tmp_path) -> None:
+    """A pytest cache full of .py scratch files is not source code.
+
+    Walking them turned every cache the tooling leaves behind into more
+    findings (and more exit-2 parse errors) than the project actually has.
+    """
+    from pcdlint.analyzer import analyze_path_ex
+
+    buggy = (
+        "from datetime import datetime\n"
+        "client.messages.create(model='m', "
+        "system=f'{datetime.now()}' + 'RULES ' * 30, messages=[])\n"
+    )
+    for name in (".pytest_cache", ".mypy_cache", "site-packages", "env"):
+        nested = tmp_path / name
+        nested.mkdir()
+        (nested / "scratch.py").write_text(buggy, encoding="utf-8")
+    (tmp_path / "real.py").write_text("x = 1\n", encoding="utf-8")
+
+    diagnostics, errors = analyze_path_ex(tmp_path)
+
+    assert errors == []
+    assert diagnostics == [], (
+        f"linted files under a skipped directory: "
+        f"{sorted(d.file_path for d in diagnostics)}"
+    )
+
+
+# --- A UTF-8 BOM must not make a file unanalyzable -----------------------
+
+def test_utf8_bom_file_is_analyzed_not_rejected(tmp_path) -> None:
+    """Editors save UTF-8 with BOM; ast.parse rejects a leading U+FEFF.
+
+    The file has to come back as lintable source, not as a parse error that
+    makes the whole run exit 2.
+    """
+    from pcdlint.analyzer import analyze_path_ex
+
+    source = (
+        "tags = {'a', 'b'}\n"
+        "prompt = ', '.join(tags)\n"
+        "client.messages.create(model='m', messages=["
+        "{'role': 'user', 'content': prompt}])\n"
+    )
+    target = tmp_path / "bom.py"
+    target.write_bytes(b"\xef\xbb\xbf" + source.encode("utf-8"))
+
+    diagnostics, errors = analyze_path_ex(target)
+
+    assert errors == [], f"BOM file was rejected: {errors}"
+    assert [d.rule_id for d in diagnostics] == ["PCL003"]

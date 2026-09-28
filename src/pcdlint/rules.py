@@ -59,12 +59,20 @@ class RuleEngine:
         self._diagnostics: list[Diagnostic] = []
         self._file_path: str = ""
         self._llm_used_vars: set = set()
+        # Every node syntactically inside an LLM sink call. An expression
+        # here is a payload by construction, which is what lets PCL002 and
+        # PCL003 fire on a json.dumps()/join() passed inline instead of only
+        # on one that went through a variable.
+        self._nodes_in_llm_sink: set[int] = set()
 
     def prepare(self, tree: ast.AST) -> None:
-        """Pre-scan AST to collect variable names that reach an LLM API call."""
+        """Pre-scan AST to collect what reaches an LLM API call."""
+        self._llm_used_vars = set()
+        self._nodes_in_llm_sink = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and self._is_llm_api_call(node):
                 for child in ast.walk(node):
+                    self._nodes_in_llm_sink.add(id(child))
                     if isinstance(child, ast.Name):
                         self._llm_used_vars.add(child.id)
 
@@ -129,8 +137,12 @@ class RuleEngine:
                 return True
             if "responses" in full_name and "create" in full_name:
                 return True
-        keywords = {kw.arg for kw in node.keywords if kw.arg}
-        return bool("messages" in keywords and ("model" in keywords or "system" in keywords))
+        # No keyword fallback. ``messages=`` plus ``model=`` is what any local
+        # ``def render(messages, model)`` looks like, and treating it as a sink
+        # means judging a plain helper's arguments as prompt prefixes. The SDK
+        # shapes above cover Anthropic, OpenAI chat and OpenAI responses; a
+        # bespoke wrapper is a name this linter cannot know.
+        return False
 
     @staticmethod
     def _keyword_node(node: ast.Call, name: str) -> ast.AST | None:
@@ -297,7 +309,7 @@ class RuleEngine:
             return
         if self._has_sort_keys_arg(node):
             return
-        if self._flows_into_prompt_or_llm(node):
+        if self._reaches_prompt(node):
             self._add(
                 lineno=node.lineno,
                 col_offset=node.col_offset,
@@ -338,8 +350,16 @@ class RuleEngine:
                 return True
         return False
 
-    def _flows_into_prompt_or_llm(self, node: ast.Call) -> bool:
-        """True when this exact json.dumps() result reaches a prompt or LLM call."""
+    def _reaches_prompt(self, node: ast.AST) -> bool:
+        """True when this expression is, or is bound into, a prompt payload.
+
+        Two ways in: written inline inside an LLM call, or assigned to a name
+        that either reaches one or is spelled like prompt material. Shared by
+        PCL002 and PCL003 so neither can fire on code that never reaches a
+        prompt -- and neither can miss one that does, just written inline.
+        """
+        if id(node) in self._nodes_in_llm_sink:
+            return True
         node_id = id(node)
         for (_scope, name), flows in self.tracker.json_flows.items():
             if node_id not in flows:
@@ -349,23 +369,14 @@ class RuleEngine:
         return False
 
     def _is_json_dumps(self, node: ast.Call) -> bool:
-        func = node.func
-        return (isinstance(func, ast.Attribute)
-                and isinstance(func.value, ast.Name) and func.value.id == "json"
-                and func.attr == "dumps")
+        """Delegated so the rule and the tracker can never disagree."""
+        return self.tracker.is_json_dumps(node)
 
     # --- PCL003: set-iteration-in-prompt ---
 
     def _is_unsorted_set_expr(self, expr: ast.AST) -> bool:
-        """Check if an expression is an unsorted set (not wrapped in sorted)."""
-        if isinstance(expr, ast.Call):
-            if isinstance(expr.func, ast.Name) and expr.func.id == "sorted":
-                return False
-            if isinstance(expr.func, ast.Name) and expr.func.id == "set":
-                return True
-        if isinstance(expr, ast.Name):
-            return self.tracker.is_set_variable(expr.id, expr)
-        return bool(isinstance(expr, (ast.Set, ast.SetComp)))
+        """Delegated so the rule and the flow collector can never disagree."""
+        return self.tracker.is_unsorted_set_expr(expr)
 
     @staticmethod
     def _pcl003_fix() -> str:
@@ -381,7 +392,24 @@ class RuleEngine:
         closing = _insert_after(argument, ")")
         return tuple(e for e in (opening, closing) if e is not None)
 
+    def _pcl003_edits_for(self, argument: ast.expr | None) -> tuple:
+        """Fix edits, or nothing when ``sorted()`` could raise on the value.
+
+        The finding still stands either way: declining the rewrite is what
+        keeps ``--fix`` from replacing a working ``", ".join({1, "a"})`` with
+        a TypeError at runtime.
+        """
+        if argument is None or not self.tracker.is_orderable_set_expr(argument):
+            return ()
+        return self._pcl003_edits(argument)
+
     def _check_pcl003(self, node: ast.AST) -> None:
+        # PCL003 is named for prompts and is an ERROR with an autofix. A set
+        # joined into a log line or a dict key does not touch the prompt
+        # cache, so gating on reachability is what keeps it from failing
+        # builds over code it has no business judging.
+        if not self._reaches_prompt(node):
+            return
         # Check join calls: "...".join(tag_set)
         if isinstance(node, ast.Call):
             if (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
@@ -394,7 +422,7 @@ class RuleEngine:
                     message="Set iterated in join() without sorted() - iteration order is non-deterministic",
                     fix_suggestion=self._pcl003_fix(),
                     severity="ERROR",
-                    edits=self._pcl003_edits(node.args[0]),
+                    edits=self._pcl003_edits_for(node.args[0]),
                 )
                 return
             # Check str(tag_set)
@@ -408,7 +436,7 @@ class RuleEngine:
                     message="Set converted to string without sorted() - iteration order is non-deterministic",
                     fix_suggestion=self._pcl003_fix(),
                     severity="ERROR",
-                    edits=self._pcl003_edits(node.args[0]),
+                    edits=self._pcl003_edits_for(node.args[0]),
                 )
                 return
 
@@ -424,7 +452,7 @@ class RuleEngine:
                         message="Set interpolated in f-string without sorted() - iteration order is non-deterministic",
                         fix_suggestion=self._pcl003_fix(),
                         severity="ERROR",
-                        edits=self._pcl003_edits(part.value),
+                        edits=self._pcl003_edits_for(part.value),
                     )
                     return
 

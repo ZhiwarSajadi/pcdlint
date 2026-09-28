@@ -53,8 +53,18 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
             continue
         path = Path(file_path)
         try:
-            source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
+            # Bytes in, bytes out: --fix must change only the spans it was
+            # asked to change. Text-mode read/write translates newlines
+            # through os.linesep (rewriting every line of an LF file on
+            # Windows), and a BOM stripped by the analyzer would come back as
+            # a parse error here unless it is put back on write.
+            data = path.read_bytes()
+        except OSError as exc:
+            errors.append(f"cannot re-read {path}: {exc}")
+            continue
+        try:
+            source = data.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
             errors.append(f"cannot re-read {path}: {exc}")
             continue
         fixed = apply_edits(source, edits)
@@ -67,7 +77,8 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
                           f"file left unchanged")
             continue
         try:
-            path.write_text(fixed, encoding="utf-8")
+            bom = b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b""
+            path.write_bytes(bom + fixed.encode("utf-8"))
         except OSError as exc:
             errors.append(f"cannot write {path}: {exc}")
             continue
@@ -135,10 +146,23 @@ def _filter_to_changed(diagnostics: list, ref: str) -> tuple[list, list[str]]:
     if diff_error:
         return [], [f"git diff against {ref!r} failed: {diff_error}"]
 
-    changed = _parse_added_lines(patch, Path(top.strip()))
+    root = Path(top.strip())
+    changed = _parse_added_lines(patch, root)
+
+    # ``git diff REF`` never mentions a file nobody has added, so a brand-new
+    # file reported clean -- the exact false clean exit 2 exists to prevent.
+    # Untracked files count as wholly new: every line in one was introduced
+    # by this change. --exclude-standard keeps .gitignore'd files out.
+    others, others_error = _git_output(
+        ["ls-files", "--others", "--exclude-standard", "--full-name"])
+    if others_error:
+        return [], [f"--diff could not list untracked files: {others_error}"]
+    untracked = {_absolute(line, root) for line in others.splitlines() if line}
+
     return [
         d for d in diagnostics
-        if d.lineno in changed.get(_absolute(d.file_path, Path.cwd()), ())
+        if (path := _absolute(d.file_path, Path.cwd())) in untracked
+        or d.lineno in changed.get(path, ())
     ], []
 
 
@@ -213,8 +237,11 @@ def main() -> int:
         return 0
 
     raw_paths = list(args.paths)
-    # Support both `pcdlint check [paths...]` and `pcdlint [paths...]`
-    if raw_paths and raw_paths[0] == "check":
+    # Support both `pcdlint check [paths...]` and `pcdlint [paths...]`.
+    # ``check`` is only a subcommand when nothing on disk is called that;
+    # otherwise the token was dropped and ``.`` substituted, silently linting
+    # a different tree than the argument named.
+    if raw_paths and raw_paths[0] == "check" and not Path("check").exists():
         raw_paths = raw_paths[1:]
         if not raw_paths:
             raw_paths = ["."]

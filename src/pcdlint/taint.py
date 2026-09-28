@@ -98,6 +98,30 @@ def _has_sort_keys(node: ast.Call) -> bool:
     return False
 
 
+def _elements_orderable(node: ast.AST) -> bool:
+    """True when every element of a set literal shares a total order.
+
+    ``sorted()`` needs one: ``sorted({1, "a"})`` raises TypeError, so a fix
+    that wraps a set may only wrap one whose elements it can see, all from a
+    single comparable family. Ceiling: a set built by a comprehension or a
+    call is unknown and is declined rather than guessed at.
+    """
+    if not isinstance(node, ast.Set) or not node.elts:
+        return False
+    values: list[object] = []
+    for elt in node.elts:
+        if not isinstance(elt, ast.Constant):
+            return False
+        values.append(elt.value)
+    # str and bytes are each ordered within their own kind, never across.
+    if all(isinstance(v, str) for v in values):
+        return True
+    if all(isinstance(v, bytes) for v in values):
+        return True
+    # bool is an int, so this covers {True, 0} as well.
+    return all(isinstance(v, (int, float)) for v in values)
+
+
 def _same_ast(left: ast.AST | None, right: ast.AST | None) -> bool:
     """True when two nodes are the same node or spell the same expression."""
     if left is None or right is None:
@@ -140,6 +164,7 @@ class _Bindings:
         "json_unsorted",
         "lists",
         "prefix_tainted",
+        "set_orderable",
         "sets",
         "static",
         "tainted",
@@ -157,6 +182,9 @@ class _Bindings:
         self.json_flows: dict[Key, set[int]] = {}
         self.lists: dict[Key, ast.List] = {}
         self.dicts: dict[Key, ast.Dict] = {}
+        # Sets whose elements provably share a total order. Only these may be
+        # handed to sorted() by --fix: sorted() on {1, "a"} raises TypeError.
+        self.set_orderable: set[Key] = set()
 
     def merge(self, other: "_Bindings") -> None:
         self.tainted.update(other.tainted)
@@ -166,6 +194,7 @@ class _Bindings:
         self.tools_mutated.update(other.tools_mutated)
         self.branch.update(other.branch)
         self.json_unsorted.update(other.json_unsorted)
+        self.set_orderable.update(other.set_orderable)
         for key, flows in other.json_flows.items():
             self.json_flows.setdefault(key, set()).update(flows)
         self.lists.update(other.lists)
@@ -181,6 +210,7 @@ class _Bindings:
         clone.tools_mutated = set(self.tools_mutated)
         clone.branch = set(self.branch)
         clone.json_unsorted = set(self.json_unsorted)
+        clone.set_orderable = set(self.set_orderable)
         clone.json_flows = {k: set(v) for k, v in self.json_flows.items()}
         clone.lists = dict(self.lists)
         clone.dicts = dict(self.dicts)
@@ -213,6 +243,10 @@ class _Bindings:
         self.sets |= other.sets
         self.tools_mutated |= other.tools_mutated
         self.json_unsorted |= other.json_unsorted
+        # Intersection, not union: orderability is a safety claim, so it only
+        # survives when every arm that rebinds the name proves it. An arm that
+        # did not rebind keeps the pre-branch value, which is in both sides.
+        self.set_orderable &= other.set_orderable
         for key, flows in other.json_flows.items():
             self.json_flows.setdefault(key, set()).update(flows)
 
@@ -240,7 +274,8 @@ class _Bindings:
             store.pop(key, None)
         # Separate name: these are sets, and the dict stores above would
         # otherwise drive mypy's inference for both loops.
-        for set_store in (self.sets, self.tools_mutated, self.branch, self.json_unsorted):
+        for set_store in (self.sets, self.tools_mutated, self.branch,
+                          self.json_unsorted, self.set_orderable):
             set_store.discard(key)
 
 
@@ -255,13 +290,24 @@ class TaintTracker:
         self._node_loop_iter: dict[int, ast.AST | None] = {}
         self._b = _Bindings()
         self._func_summaries: dict[Key, FuncSummary] = {}
+        # Local names bound to stdlib json: ``import json as J`` spells the
+        # same non-determinism as ``json.dumps`` and must be recognised.
+        self._json_modules: set[str] = set()
+        self._json_dumps: set[str] = set()
 
     # ------------------------------------------------------------------
     # Scopes and branch positions
     # ------------------------------------------------------------------
 
     def build_scopes(self, tree: ast.AST) -> None:
-        """Map every node to its lexical scope and branch position."""
+        """Map every node to its lexical scope and branch position.
+
+        Import bindings ride along on the same walk: ``J.dumps`` only means
+        ``json.dumps`` because some earlier line said ``import json as J``,
+        and that has to be known before any rule judges a call. Ceiling:
+        bindings are tracked as if file-global, so a local ``import json``
+        inside a function still counts for the whole file.
+        """
         stack: list[tuple[ast.AST, Scope, bool, bool, ast.AST | None]] = [
             (tree, MODULE_SCOPE, False, False, None),
         ]
@@ -272,6 +318,7 @@ class TaintTracker:
             self._node_cond[id(node)] = in_cond
             self._node_loop[id(node)] = in_loop
             self._node_loop_iter[id(node)] = loop_iter
+            self._record_imports(node)
             child_scope = scope
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 child_scope = scope + (node.name,)
@@ -279,6 +326,17 @@ class TaintTracker:
             flags = _child_flags(node, in_cond, in_loop, loop_iter, len(children))
             for child, (c_cond, c_loop, c_iter) in zip(children, flags):
                 stack.append((child, child_scope, c_cond, c_loop, c_iter))
+
+    def _record_imports(self, node: ast.AST) -> None:
+        """Remember how this file spells stdlib json, if it spells it at all."""
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "json":
+                    self._json_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "json":
+            for alias in node.names:
+                if alias.name == "dumps":
+                    self._json_dumps.add(alias.asname or alias.name)
 
     def scope_of(self, node: ast.AST) -> Scope:
         """Lexical scope of a node (module scope when unknown)."""
@@ -362,7 +420,11 @@ class TaintTracker:
 
     @property
     def json_flows(self) -> dict[Key, set[int]]:
-        """Vars whose value embeds an unsorted ``json.dumps`` call (by node id)."""
+        """Vars whose value embeds an order-unstable expression, by node id.
+
+        Shared by PCL002 (unsorted ``json.dumps``) and PCL003 (set iterated
+        without ``sorted()``); each rule looks up only its own node ids.
+        """
         return self._b.json_flows
 
     def resolve_dict(self, node: ast.AST) -> ast.Dict | None:
@@ -417,11 +479,12 @@ class TaintTracker:
         if length is not None:
             return length >= STATIC_SOLID_MIN_CHARS
         if isinstance(node, ast.Name):
-            solid = self._get(self._b.static, node.id, node)
-            if node.id in STATIC_PREFIX_NAMES or solid:
+            if node.id in STATIC_PREFIX_NAMES:
                 return True
-            if node.id.isupper():
-                return True
+            # Only a value we watched get bound counts. Shouty case on its own
+            # says nothing: ``GREETING = input(...)`` is uppercase and dynamic,
+            # and calling it static mutes every taint sitting after it.
+            return bool(self._get(self._b.static, node.id, node))
         return False
 
     def _flatten_string_expr(self, node: ast.AST) -> list[ast.AST]:
@@ -602,6 +665,8 @@ class TaintTracker:
                 buf.prefix_tainted[key] = prefix_origin
             if self._has(self._b.sets, src, value):
                 buf.sets.add(key)
+            if self._has(self._b.set_orderable, src, value):
+                buf.set_orderable.add(key)
             static = self._get(self._b.static, src, value)
             if static:
                 buf.static[key] = static
@@ -635,6 +700,8 @@ class TaintTracker:
             buf.sets.add(key)
             if var_name == "tools":
                 buf.tools_mutated.add(key)
+            if _elements_orderable(value):
+                buf.set_orderable.add(key)
             self._track_json_and_branch(var_name, value, scope, buf)
             return
 
@@ -660,7 +727,7 @@ class TaintTracker:
                         or self.returns_set(arg):
                     buf.tools_mutated.add(key)
 
-            if self._is_json_dumps(value) and not _has_sort_keys(value):
+            if self.is_json_dumps(value) and not _has_sort_keys(value):
                 buf.json_unsorted.add(key)
 
             if self._is_file_read(value):
@@ -734,17 +801,24 @@ class TaintTracker:
                                buf: _Bindings) -> None:
         """Record unsorted-json provenance and branch-conditional construction."""
         key = (scope, var_name)
-        flows = self._unsorted_json_nodes(value)
+        flows = self._nondeterministic_nodes(value)
         if flows:
             buf.json_flows[key] = flows
         if self._references_branch_var(value):
             buf.branch.add(key)
 
-    def _unsorted_json_nodes(self, node: ast.AST) -> set[int]:
-        """Ids of unsorted ``json.dumps`` calls that flow into ``node``."""
+    def _nondeterministic_nodes(self, node: ast.AST) -> set[int]:
+        """Ids of order-unstable expressions that flow into ``node``.
+
+        One store for both rules that carry a mechanical fix: an unsorted
+        ``json.dumps`` (PCL002) and a set iterated without ``sorted()``
+        (PCL003). Each rule looks up its own node id, so sharing the store
+        costs nothing and keeps assignment, aliasing and function returns in
+        one place.
+        """
         out: set[int] = set()
         for sub in ast.walk(node):
-            if isinstance(sub, ast.Call) and self._is_json_dumps(sub) and not _has_sort_keys(sub):
+            if self._is_nondeterministic_expr(sub):
                 out.add(id(sub))
             elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
                 # A helper's unsorted dumps flows to whoever calls it.
@@ -756,6 +830,32 @@ class TaintTracker:
                 if flows:
                     out |= set(flows)
         return out
+
+    def _is_nondeterministic_expr(self, sub: ast.AST) -> bool:
+        """One expression whose string form can differ between two runs."""
+        if isinstance(sub, ast.Call):
+            if self.is_json_dumps(sub):
+                return not _has_sort_keys(sub)
+            return self._is_set_iteration(sub)
+        if isinstance(sub, ast.JoinedStr):
+            return self._is_set_interpolation(sub)
+        return False
+
+    def _is_set_iteration(self, node: ast.Call) -> bool:
+        """A ``join``/``str`` that consumes a set without pinning its order."""
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "join":
+            return bool(node.args) and self.is_unsorted_set_expr(node.args[0])
+        if isinstance(node.func, ast.Name) and node.func.id == "str":
+            return bool(node.args) and self.is_unsorted_set_expr(node.args[0])
+        return False
+
+    def _is_set_interpolation(self, node: ast.JoinedStr) -> bool:
+        """An f-string that prints a set directly, e.g. ``f"{tags}"``."""
+        return any(
+            isinstance(part, ast.FormattedValue)
+            and self.is_unsorted_set_expr(part.value)
+            for part in node.values
+        )
 
     def _references_branch_var(self, node: ast.AST) -> bool:
         """True when the expression reads a name that is only set on some branches."""
@@ -876,7 +976,7 @@ class TaintTracker:
                 origin = self.get_taint_origin_of_node(value)
             if not is_set:
                 is_set = self._value_is_set(value)
-            flows |= self._unsorted_json_nodes(value)
+            flows |= self._nondeterministic_nodes(value)
         return FuncSummary(origin=origin, is_set=is_set,
                            json_flows=frozenset(flows))
 
@@ -928,9 +1028,32 @@ class TaintTracker:
     def _is_file_read(self, node: ast.Call) -> bool:
         return isinstance(node.func, ast.Attribute) and node.func.attr in ("read", "read_text")
 
-    def _is_json_dumps(self, node: ast.Call) -> bool:
-        dotted = _extract_dotted_name(node.func)
-        return dotted in ("json.dumps", "dumps")
+    def is_json_dumps(self, node: ast.Call) -> bool:
+        """True for ``json.dumps`` however this file imported it.
+
+        orjson and ujson are deliberately left out: their output is just as
+        insertion-order dependent, but ``sort_keys=True`` -- the fix PCL002
+        attaches -- is not how either of them is asked to sort, so reporting
+        them would attach a rewrite that does nothing.
+        """
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "dumps":
+            if isinstance(func.value, ast.Name):
+                return (func.value.id in self._json_modules
+                        or func.value.id == "json")
+            return False
+        return isinstance(func, ast.Name) and func.id in self._json_dumps
+
+    def is_unsorted_set_expr(self, expr: ast.AST) -> bool:
+        """True when ``expr`` is a set whose iteration order is not pinned."""
+        if isinstance(expr, ast.Call):
+            if isinstance(expr.func, ast.Name) and expr.func.id == "sorted":
+                return False
+            if isinstance(expr.func, ast.Name) and expr.func.id == "set":
+                return True
+        if isinstance(expr, ast.Name):
+            return self.is_set_variable(expr.id, expr)
+        return isinstance(expr, (ast.Set, ast.SetComp))
 
     def get_prefix_tainted(self, node: ast.AST) -> TaintOrigin | None:
         """Check if an AST expression is prefix-tainted and return its TaintOrigin."""
@@ -970,6 +1093,23 @@ class TaintTracker:
 
     def is_set_variable(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.sets, var_name, node)
+
+    def is_set_orderable(self, var_name: str, node: ast.AST | None = None) -> bool:
+        """True only when every arm bound this name to a provably sortable set."""
+        return self._has(self._b.set_orderable, var_name, node)
+
+    def is_orderable_set_expr(self, node: ast.AST) -> bool:
+        """True when wrapping ``node`` in ``sorted()`` cannot raise.
+
+        This is the gate on the PCL003 autofix: reporting the finding is
+        always right, shipping ``sorted(...)`` is not, unless the elements
+        are visible and mutually comparable.
+        """
+        if isinstance(node, ast.Set):
+            return _elements_orderable(node)
+        if isinstance(node, ast.Name):
+            return self._has(self._b.set_orderable, node.id, node)
+        return False
 
     def is_tools_mutated(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.tools_mutated, var_name, node)

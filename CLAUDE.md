@@ -26,8 +26,8 @@ pytest tests/test_pcdlint.py -k test_pcl001_detects_datetime_at_start_of_system_
 # Run tests via Python module (when pytest is not directly on PATH)
 python -m pytest
 
-# Run tests under the CI coverage gate (90% floor)
-python -m pytest --cov=pcdlint --cov-fail-under=90 --cov-report=term-missing
+# Run tests under the CI coverage gate (91% floor)
+python -m pytest --cov=pcdlint --cov-fail-under=91 --cov-report=term-missing
 ```
 
 ### Linting & Running pcdlint
