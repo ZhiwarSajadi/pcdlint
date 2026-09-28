@@ -10,6 +10,7 @@ to defaults: ``select = ["PCL999"]`` must not make the run look clean.
 
 import sys
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
 from pcdlint.rules import KNOWN_RULE_IDS
@@ -102,15 +103,15 @@ def _load(path: Path) -> tuple[Config | None, bool]:
     return Config(select=select, ignore=ignore), True
 
 
-def load_for(file_path: str) -> Config:
-    """Config governing ``file_path``; DEFAULT when nothing declares one."""
-    if not file_path:
-        return DEFAULT
-    try:
-        start = Path(file_path).resolve().parent
-    except OSError:  # pragma: no cover - unresolvable paths are rare
-        return DEFAULT
+@cache
+def _discover(start: Path) -> Config:
+    """Config governing every file in ``start``, cached per directory.
 
+    The walk is identical for every file sharing a directory, and parsing the
+    same pyproject.toml once per file dominated large runs. A ConfigError is
+    not cached -- only returns are -- so a broken config still raises on every
+    call rather than turning into a clean run the second time.
+    """
     for directory in [start, *start.parents]:
         candidate = directory / "pyproject.toml"
         if not candidate.is_file():
@@ -119,6 +120,17 @@ def load_for(file_path: str) -> Config:
         if found:
             return config or DEFAULT
     return DEFAULT
+
+
+def load_for(file_path: str) -> Config:
+    """Config governing ``file_path``; DEFAULT when nothing declares one."""
+    if not file_path:
+        return DEFAULT
+    try:
+        start = Path(file_path).resolve().parent
+    except OSError:  # pragma: no cover - unresolvable paths are rare
+        return DEFAULT
+    return _discover(start)
 
 
 def parse_rule_list(values: list[str] | None, flag: str, *,

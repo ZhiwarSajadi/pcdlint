@@ -194,3 +194,39 @@ def test_empty_cli_ignore_is_allowed(tmp_path, capsys) -> None:
     code, _err = _exit_code(tmp_path, capsys, "--ignore", ",")
 
     assert code == 1, "no rules should have been switched off"
+
+
+# --- P3-2: config is looked up once per directory, not once per file ------
+
+def test_config_is_parsed_once_per_directory(tmp_path, monkeypatch, capsys) -> None:
+    """Every file in a directory re-walked the tree and re-parsed the same
+    pyproject.toml."""
+    from pcdlint import config as config_mod
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pcdlint]\nselect = ["PCL002"]\n', encoding="utf-8")
+    for name in ("a.py", "b.py", "c.py"):
+        (tmp_path / name).write_text(CODE, encoding="utf-8")
+
+    parsed = []
+    original = config_mod._load
+    monkeypatch.setattr(config_mod, "_load",
+                        lambda path: (parsed.append(path), original(path))[1])
+
+    _rule_ids(capsys, tmp_path)
+
+    assert len(parsed) == 1, f"parsed the config {len(parsed)} times"
+
+
+def test_a_broken_config_still_fails_every_call(tmp_path) -> None:
+    """Caching must never turn a later failure into a silent clean run."""
+    from pcdlint import config as config_mod
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pcdlint\nselect = broken\n", encoding="utf-8")
+    target = str(tmp_path / "a.py")
+
+    with pytest.raises(config_mod.ConfigError):
+        config_mod.load_for(target)
+    with pytest.raises(config_mod.ConfigError):
+        config_mod.load_for(target)

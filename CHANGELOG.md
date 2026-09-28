@@ -41,6 +41,10 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Performance
 
+- The nearest `pyproject.toml` is looked up once per directory instead of
+  once per file, so a 500-file package no longer parses the same config 500
+  times. Errors are never cached: a broken config still raises (exit 2) on
+  every file it governs.
 - `_reaches_prompt` is no longer called for every node in the file. PCL003
   now matches the node's shape first and only then asks whether it reaches a
   prompt, and the question itself is answered from a reverse index built once
