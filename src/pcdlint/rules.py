@@ -168,7 +168,12 @@ class RuleEngine:
     # --- argument resolution ---
 
     def _get_system_arg(self, node: ast.Call) -> ast.AST | None:
-        return self._keyword_node(node, "system")
+        # instructions= is the Responses API's spelling of system=: the same
+        # prefix role, so it must be judged by the same rule.
+        found = self._keyword_node(node, "system")
+        if found is not None:
+            return found
+        return self._keyword_node(node, "instructions")
 
     def _get_messages_arg(self, node: ast.Call) -> ast.AST | None:
         for name in ("messages", "input"):

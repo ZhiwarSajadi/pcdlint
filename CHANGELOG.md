@@ -17,6 +17,9 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `instructions=` on an OpenAI Responses API call is now judged as a system
+  prompt. It is the Responses spelling of `system=` and was skipped entirely,
+  so a tainted prefix passed that way produced no finding.
 - LLM sink detection now matches the SDK call shape exactly instead of
   searching for substrings. Newly recognised: `chat.completions.parse`,
   `beta.chat.completions.parse`, `responses.parse`, `responses.stream`,

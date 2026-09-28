@@ -432,6 +432,19 @@ def test_pcl001_responses_api_is_recognized() -> None:
     assert _codes(source) == ["PCL001"]
 
 
+def test_pcl001_responses_instructions_are_a_system_prompt() -> None:
+    """instructions= is the Responses API's system prompt, so it is a prefix."""
+    source = '''
+        from datetime import datetime
+        client.responses.create(
+            model="m",
+            instructions=f"{datetime.now()}" + "STATIC RULES " * 30,
+            input="hi",
+        )
+    '''
+    assert _codes(source) == ["PCL001"]
+
+
 def test_pcl001_taint_before_cache_control_breakpoint() -> None:
     """A cache breakpoint marks every earlier message as part of the cached prefix."""
     source = '''
