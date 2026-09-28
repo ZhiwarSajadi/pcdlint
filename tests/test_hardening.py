@@ -1,5 +1,6 @@
 """Regression tests for correctness/robustness fixes (see audit findings)."""
 
+import sys
 import textwrap
 
 import pytest
@@ -969,3 +970,91 @@ def test_random_shuffle_taints_its_argument() -> None:
         'system=", ".join(items) + "STATIC RULES " * 30)\n'
     )
     assert "PCL001" in _codes(source)
+
+
+# --- P1-6: match, except* and with bodies --------------------------------
+
+def test_taint_assigned_inside_a_match_case() -> None:
+    """ast.match_case is not an ast.stmt, so its body was never walked."""
+    source = (
+        "from datetime import datetime\n"
+        "kind = 'a'\n"
+        "match kind:\n"
+        "    case 'a':\n"
+        '        stamp = f"{datetime.now()}"\n'
+        '    case _:\n'
+        '        stamp = "static"\n'
+        'client.messages.create(model="m", '
+        'system=stamp + "STATIC RULES " * 30)\n'
+    )
+    assert "PCL001" in _codes(source)
+
+
+def test_irrefutable_case_drops_the_taint_it_rebinds() -> None:
+    """`case _` always runs, so the pre-match state cannot survive it."""
+    source = (
+        "from datetime import datetime\n"
+        'stamp = f"{datetime.now()}"\n'
+        "match kind:\n"
+        '    case _:\n'
+        '        stamp = "static"\n'
+        'client.messages.create(model="m", '
+        'system=stamp + "STATIC RULES " * 30)\n'
+    )
+    assert _codes(source) == [], _codes(source)
+
+
+def test_partial_case_keeps_the_taint_it_may_not_rebind() -> None:
+    """With no `case _`, the match may match nothing at all."""
+    source = (
+        "from datetime import datetime\n"
+        'stamp = f"{datetime.now()}"\n'
+        "match kind:\n"
+        '    case "a":\n'
+        '        stamp = "static"\n'
+        'client.messages.create(model="m", '
+        'system=stamp + "STATIC RULES " * 30)\n'
+    )
+    assert "PCL001" in _codes(source)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11),
+                    reason="except* requires Python 3.11+")
+def test_taint_assigned_inside_an_except_star_handler() -> None:
+    """ast.TryStar is not an ast.Try, so its handlers were never walked."""
+    source = (
+        "from datetime import datetime\n"
+        'stamp = "static"\n'
+        "try:\n"
+        "    pass\n"
+        "except* ValueError:\n"
+        '    stamp = f"{datetime.now()}"\n'
+        'client.messages.create(model="m", '
+        'system=stamp + "STATIC RULES " * 30)\n'
+    )
+    assert "PCL001" in _codes(source)
+
+
+def test_taint_assigned_inside_a_with_block() -> None:
+    """Guard: With bodies go through the generic path and must keep working."""
+    source = (
+        "from datetime import datetime\n"
+        'with open("f.txt") as handle:\n'
+        '    stamp = f"{datetime.now()}"\n'
+        'client.messages.create(model="m", '
+        'system=stamp + "STATIC RULES " * 30)\n'
+    )
+    assert "PCL001" in _codes(source)
+
+
+def test_tools_appended_inside_a_match_case_are_flagged() -> None:
+    """A case arm only runs on some paths, exactly like an if arm."""
+    source = (
+        "kind = 'a'\n"
+        "tools = [{'name': 't1'}]\n"
+        "match kind:\n"
+        "    case 'a':\n"
+        "        tools.append({'name': 't2'})\n"
+        "client.messages.create(model='m', messages=[], tools=tools)\n"
+    )
+    assert "PCL004" in _codes(source)

@@ -17,6 +17,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `match` blocks and `except*` handlers are tracked now. `ast.match_case` and
+  `ast.ExceptHandler` are not `ast.stmt`, so their bodies were skipped
+  entirely, and `ast.TryStar` was not routed to the try handler at all --
+  a prompt assigned inside a `case` or an `except*` arm looked clean. Each
+  case arm runs from one snapshot and may-merges with the rest, plus an
+  implicit no-match path unless an irrefutable `case _` guarantees one runs.
+  A match arm is also marked conditional like an `if` arm, so a
+  `tools.append(...)` inside one reports PCL004.
 - Taint sources are now resolved through the file's own imports, so
   `from datetime import datetime as dt; dt.now()`, `import random as rnd;
   rnd.choice(x)` and `from uuid import uuid4 as u; u()` are all recognised.

@@ -169,8 +169,9 @@ def _child_flags(node: ast.AST, in_cond: bool, in_loop: bool,
     while an ``if`` around the same mutation does not.
     """
     inherit = (in_cond, in_loop, loop_iter)
-    if isinstance(node, (ast.If, ast.IfExp)):
-        # head child (the test) runs unconditionally; the arms do not.
+    if isinstance(node, (ast.If, ast.IfExp, ast.Match)):
+        # head child (the test, or a match subject) runs unconditionally;
+        # the arms do not.
         return [inherit] + [(True, in_loop, loop_iter)] * (count - 1)
     if isinstance(node, ast.While):
         # head child (the test) runs unconditionally; the body may run zero times.

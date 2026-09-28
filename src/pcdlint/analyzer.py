@@ -3,6 +3,7 @@
 import ast
 import os
 from pathlib import Path
+from typing import cast
 
 from pcdlint import config, disables
 from pcdlint.models import Diagnostic
@@ -21,6 +22,15 @@ SKIP_DIRS: set[str] = {
 # stop changing. Expression statements (list.append, ...) only run on the first
 # pass so they are not applied twice.
 _MAX_PASSES = 16
+
+# ``except*`` (3.11+) produces ast.TryStar, which carries Try's four fields
+# but is not a subclass of it. Resolved through getattr so this module still
+# imports on 3.10, where ``except*`` is a SyntaxError and the node cannot
+# appear.
+_TRY_NODES: tuple[type, ...] = tuple(
+    node_type for node_type in (ast.Try, getattr(ast, "TryStar", None))
+    if node_type is not None
+)
 
 
 def _child_stmts(node: ast.AST) -> list:
@@ -46,8 +56,10 @@ def _walk_stmts(tracker: TaintTracker, stmts: list, pass_no: int) -> None:
     for stmt in stmts:
         if isinstance(stmt, ast.If):
             _track_if(tracker, stmt, pass_no)
-        elif isinstance(stmt, ast.Try):
-            _track_try(tracker, stmt, pass_no)
+        elif isinstance(stmt, _TRY_NODES):
+            _track_try(tracker, cast(ast.Try, stmt), pass_no)
+        elif isinstance(stmt, ast.Match):
+            _track_match(tracker, stmt, pass_no)
         elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
             _track_loop(tracker, stmt, pass_no)
         else:
@@ -78,6 +90,46 @@ def _track_if(tracker: TaintTracker, node: ast.If, pass_no: int) -> None:
     on_else = tracker.snapshot()
     tracker.restore(on_body)
     tracker.merge_path(on_else)
+
+
+def _is_irrefutable(node: ast.Match) -> bool:
+    """True when one ``case`` matches anything, so some arm always runs."""
+    for case in node.cases:
+        pattern = case.pattern
+        # ``case _`` and ``case name`` both parse as MatchAs with no subject.
+        if isinstance(pattern, ast.MatchAs) and pattern.pattern is None:
+            return True
+    return False
+
+
+def _track_match(tracker: TaintTracker, node: ast.Match, pass_no: int) -> None:
+    """Walk every ``case`` arm from one snapshot and may-merge the results.
+
+    Exactly one arm runs -- or none at all, unless an irrefutable ``case _``
+    guarantees one does, which is what the implicit fall-through path models.
+    """
+    before = tracker.snapshot()
+    arms: list = []
+    for case in node.cases:
+        # restore() hands the object over rather than copying it, so each arm
+        # has to start from a fresh copy or it rewrites the snapshot the next
+        # one is meant to start from.
+        tracker.restore(before.copy())
+        _walk_stmts(tracker, case.body, pass_no)
+        arms.append(tracker.snapshot())
+
+    if not arms:
+        tracker.restore(before)
+        return
+    if _is_irrefutable(node):
+        # One arm always runs, so the pre-match state is not a path.
+        tracker.restore(arms[0])
+        rest = arms[1:]
+    else:
+        tracker.restore(before)
+        rest = arms
+    for arm in rest:
+        tracker.merge_path(arm)
 
 
 def _track_try(tracker: TaintTracker, node: ast.Try, pass_no: int) -> None:
