@@ -71,14 +71,15 @@ def _track_simple(tracker: TaintTracker, stmt: ast.AST, pass_no: int) -> None:
     if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
         tracker.track_assignment(stmt)
     elif isinstance(stmt, ast.Expr):
-        # Reaches the tracker on every pass: the idempotent marks inside
-        # (a shuffle tainting its argument) have to survive the reassignment
-        # a later pass makes, while the in-place list mutations stay gated
-        # on pass_no inside the tracker.
+        # Reaches the tracker on every pass: the marks inside (a shuffle
+        # tainting its argument, an append flagging the tools list) have to
+        # survive the reassignment a later pass makes. The in-place list
+        # rebuild stays gated on pass_no inside the tracker.
         tracker.track_expr_stmt(stmt, pass_no)
-    elif pass_no == 0 and isinstance(stmt, ast.AugAssign):
-        # Augmented assignments are not idempotent either, so first pass only.
-        tracker.track_aug_assign(stmt)
+    elif isinstance(stmt, ast.AugAssign):
+        # Same reasoning: `prompt = ...` on pass 2 wipes what `prompt += ...`
+        # set on pass 1, so the mark has to be re-applied.
+        tracker.track_aug_assign(stmt, pass_no)
 
 
 def _track_if(tracker: TaintTracker, node: ast.If, pass_no: int) -> None:

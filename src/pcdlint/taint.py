@@ -983,14 +983,13 @@ class TaintTracker:
                 return True
         return False
 
-    def track_aug_assign(self, node: ast.AugAssign) -> None:
+    def track_aug_assign(self, node: ast.AugAssign, pass_no: int = 0) -> None:
         """Track augmented assignments like messages += [...] or tools += [...]."""
         if isinstance(node.target, ast.Name):
             scope = self.scope_of(node)
             key = (scope, node.target.id)
-            current = self._get(self._b.lists, node.target.id, node)
-            if current and isinstance(node.value, ast.List):
-                current.elts.extend(node.value.elts)
+            # Marks first: they are idempotent, so they run on every pass and
+            # survive the plain Assign a later pass makes to the same name.
             if node.target.id == "tools":
                 self._b.tools_mutated.add(key)
             if self.in_branch(node):
@@ -1002,6 +1001,13 @@ class TaintTracker:
                     self._b.tainted[key] = origin
                     self._b.prefix_tainted[key] = origin
                     self._label_origin(key, node.target.id)
+            if pass_no:
+                # Growing the list is not idempotent: running it on every
+                # pass would append the elements once per pass.
+                return
+            current = self._get(self._b.lists, node.target.id, node)
+            if current and isinstance(node.value, ast.List):
+                current.elts.extend(node.value.elts)
 
     def track_expr_stmt(self, node: ast.Expr, pass_no: int = 0) -> None:
         """Track standalone expressions such as random.shuffle(tools) or list.append()."""
@@ -1011,21 +1017,31 @@ class TaintTracker:
                 target = node.value.args[0]
                 self.mark_tools_mutated(target.id, target)
                 # shuffle() reorders in place, so the name it touches stops
-                # having a stable value. Marks like this one run on every
-                # pass: a later pass rebinds the name with a plain Assign
-                # and would otherwise leave it untainted.
+                # having a stable value.
                 self._taint_shuffled(target.id, target)
+            if isinstance(node.value.func, ast.Attribute):
+                attr = node.value.func.attr
+                caller = node.value.func.value
+                if isinstance(caller, ast.Name):
+                    # Marks only from here down. They set flags, so repeating
+                    # them is harmless and a later pass's reassignment of the
+                    # name cannot leave the flag missing.
+                    if attr in ("append", "extend", "insert") \
+                            and self._mutation_is_non_deterministic(node):
+                        self.mark_tools_mutated(caller.id, caller)
+                    if attr == "extend" and node.value.args:
+                        arg = node.value.args[0]
+                        if isinstance(arg, ast.Name) and self.is_set_variable(arg.id, arg):
+                            self.mark_tools_mutated(caller.id, caller)
             if pass_no:
-                # Everything below mutates state in place and is not
-                # idempotent, so it runs on the first pass only.
+                # Rebuilding the list's contents is not idempotent -- one
+                # append per pass would duplicate the element -- so it stays
+                # on the first pass only.
                 return
             if isinstance(node.value.func, ast.Attribute):
                 attr = node.value.func.attr
                 caller = node.value.func.value
                 if isinstance(caller, ast.Name):
-                    if attr in ("append", "extend", "insert") \
-                            and self._mutation_is_non_deterministic(node):
-                        self.mark_tools_mutated(caller.id, caller)
                     if attr == "append" and node.value.args:
                         lst = self._get(self._b.lists, caller.id, caller)
                         if lst:
@@ -1035,8 +1051,6 @@ class TaintTracker:
                         lst = self._get(self._b.lists, caller.id, caller)
                         if lst and isinstance(arg, ast.List):
                             lst.elts.extend(arg.elts)
-                        if isinstance(arg, ast.Name) and self.is_set_variable(arg.id, arg):
-                            self.mark_tools_mutated(caller.id, caller)
 
     def _taint_shuffled(self, name: str, node: ast.AST) -> None:
         """Record that ``name`` now holds a non-deterministic value."""

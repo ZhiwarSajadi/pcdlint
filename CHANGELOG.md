@@ -30,6 +30,13 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Marks set on the first tracking pass survive the later passes. Any file
+  with a local helper function needs more than one pass, and each pass
+  rebinds names with a plain `Assign` -- which cleared `tools_mutated` and
+  the `+=` taint that pass 0 had just recorded, so `tools.append(...)` in an
+  `if` and `prompt += f"{...}"` stopped reporting PCL004/PCL001. The flags
+  are re-applied every pass (they are idempotent); only the in-place list
+  rebuild stays on pass 0, since repeating it would duplicate elements.
 - `match` blocks and `except*` handlers are tracked now. `ast.match_case` and
   `ast.ExceptHandler` are not `ast.stmt`, so their bodies were skipped
   entirely, and `ast.TryStar` was not routed to the try handler at all --

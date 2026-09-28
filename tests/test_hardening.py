@@ -1213,3 +1213,36 @@ def test_pcl005_is_a_known_rule_id_with_a_description() -> None:
 
     assert "PCL005" in KNOWN_RULE_IDS
     assert RULE_SHORT_DESCRIPTIONS["PCL005"]
+
+
+# --- P2-3: marks set by pass 0 must survive pass 1 ------------------------
+
+def test_pcl004_survives_a_second_tracking_pass() -> None:
+    """A def forces pass 2, and pass 2 rebinds tools before the append.
+
+    The append mark is set on pass 0 only, so the reassignment wiped it and
+    the tools list looked untouched.
+    """
+    source = (
+        "def helper():\n"
+        "    return {'name': 'c'}\n"
+        "tools = [{'name': 'a'}]\n"
+        "if cond:\n"
+        "    tools.append({'name': 'b'})\n"
+        "client.messages.create(model='m', messages=[], tools=tools)\n"
+    )
+    assert "PCL004" in _codes(source), _codes(source)
+
+
+def test_pcl001_from_an_augmented_assignment_survives_a_second_pass() -> None:
+    """prompt = SYSTEM_PROMPT clears the taint the earlier += had added."""
+    source = (
+        "from datetime import datetime\n"
+        "SYSTEM_PROMPT = 'rules ' * 30\n"
+        "def helper():\n"
+        "    return 1\n"
+        "prompt = SYSTEM_PROMPT\n"
+        "prompt += f'{datetime.now()}'\n"
+        "client.messages.create(model='m', system=prompt, messages=[])\n"
+    )
+    assert "PCL001" in _codes(source), _codes(source)
