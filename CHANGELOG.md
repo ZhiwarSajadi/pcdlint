@@ -39,6 +39,14 @@ All notable changes to pcdlint are documented here. The format follows
   call you meant silently muted every other finding in the file. Blank and
   comment-only lines between the marker and its target are skipped.
 
+### Performance
+
+- `_reaches_prompt` is no longer called for every node in the file. PCL003
+  now matches the node's shape first and only then asks whether it reaches a
+  prompt, and the question itself is answered from a reverse index built once
+  per run instead of a scan of every entry in the flow table -- so the
+  per-node cost no longer grows with the file.
+
 ### Fixed
 
 - Rules now judge a call against the bindings it ran with, not the ones the

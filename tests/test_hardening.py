@@ -1318,3 +1318,41 @@ def test_readme_examples_use_a_cache_capable_model() -> None:
     assert 'model="gpt-4"' not in text, "gpt-4 does not support prompt caching"
     assert "10x read discount" not in text, "discount varies by provider/model"
     assert "cache_control" in text, "the provider contrast section must stay"
+
+
+# --- P3-1: reachability is only worth probing where it can matter --------
+
+def test_reachability_is_only_probed_for_nodes_that_can_match() -> None:
+    """_check_pcl003 asked _reaches_prompt about *every* node in the file.
+
+    Each call walked every entry of tracker.json_flows, so the cost grew
+    with the file and the flow table on nodes that could never match -- an
+    int, a plain call, a constant.
+    """
+    from pcdlint.rules import RuleEngine
+
+    probed: list = []
+    original = RuleEngine._reaches_prompt
+
+    def counting(self, node):
+        probed.append(node)
+        return original(self, node)
+
+    source = (
+        "from datetime import datetime\n"
+        "a = datetime.now()\n"
+        "b = f'{a}'\n"
+        "c = 'x' + 'y'\n"
+        "d = len(c)\n"
+        "client.messages.create(model='m', system=b, messages=[])\n"
+    )
+    RuleEngine._reaches_prompt = counting
+    try:
+        analyze_code(source, "case.py")
+    finally:
+        RuleEngine._reaches_prompt = original
+
+    assert probed == [], (
+        f"_reaches_prompt was probed {len(probed)} times on code with no set "
+        "iteration and no json.dumps"
+    )

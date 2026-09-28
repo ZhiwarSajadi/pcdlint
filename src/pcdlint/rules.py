@@ -110,6 +110,8 @@ class RuleEngine:
         # PCL003 fire on a json.dumps()/join() passed inline instead of only
         # on one that went through a variable.
         self._nodes_in_llm_sink: set[int] = set()
+        # Reverse index over tracker.json_flows, filled by prepare().
+        self._flow_names: dict[int, set] = {}
         # The sink currently being judged, so a fix suggestion can speak to
         # the provider it belongs to.
         self._sink: ast.Call | None = None
@@ -118,12 +120,19 @@ class RuleEngine:
         """Pre-scan AST to collect what reaches an LLM API call."""
         self._llm_used_vars = set()
         self._nodes_in_llm_sink = set()
+        self._flow_names = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and self._is_llm_api_call(node):
                 for child in ast.walk(node):
                     self._nodes_in_llm_sink.add(id(child))
                     if isinstance(child, ast.Name):
                         self._llm_used_vars.add(child.id)
+        # Reverse index: node id -> the names bound to it. Building it once
+        # turns _reaches_prompt's scan of every flow entry into a lookup, so
+        # the per-node cost no longer grows with the flow table.
+        for (_scope, name), flows in self.tracker.json_flows.items():
+            for node_id in flows:
+                self._flow_names.setdefault(node_id, set()).add(name)
 
     def run(self, tree: ast.AST, file_path: str = "") -> list[Diagnostic]:
         """Run every rule over ``tree`` and return its diagnostics."""
@@ -505,10 +514,7 @@ class RuleEngine:
         """
         if id(node) in self._nodes_in_llm_sink:
             return True
-        node_id = id(node)
-        for (_scope, name), flows in self.tracker.json_flows.items():
-            if node_id not in flows:
-                continue
+        for name in self._flow_names.get(id(node), ()):
             if name in self._llm_used_vars or self._is_prompt_name(name):
                 return True
         return False
@@ -553,12 +559,14 @@ class RuleEngine:
         # joined into a log line or a dict key does not touch the prompt
         # cache, so gating on reachability is what keeps it from failing
         # builds over code it has no business judging.
-        if not self._reaches_prompt(node):
-            return
+        #
+        # Each match tests reachability *last*: it is the expensive half, and
+        # it used to run on every node in the file regardless of shape.
         # Check join calls: "...".join(tag_set)
         if isinstance(node, ast.Call):
             if (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
-                    and node.args and self._is_unsorted_set_expr(node.args[0])):
+                    and node.args and self._is_unsorted_set_expr(node.args[0])
+                    and self._reaches_prompt(node)):
                 self._add(
                     lineno=node.lineno,
                     col_offset=node.col_offset,
@@ -572,7 +580,8 @@ class RuleEngine:
                 return
             # Check str(tag_set)
             if (isinstance(node.func, ast.Name) and node.func.id == "str"
-                    and node.args and self._is_unsorted_set_expr(node.args[0])):
+                    and node.args and self._is_unsorted_set_expr(node.args[0])
+                    and self._reaches_prompt(node)):
                 self._add(
                     lineno=node.lineno,
                     col_offset=node.col_offset,
@@ -588,7 +597,9 @@ class RuleEngine:
         # Check f-string interpolation: f"{tag_set}"
         if isinstance(node, ast.JoinedStr):
             for part in node.values:
-                if isinstance(part, ast.FormattedValue) and self._is_unsorted_set_expr(part.value):
+                if (isinstance(part, ast.FormattedValue)
+                        and self._is_unsorted_set_expr(part.value)
+                        and self._reaches_prompt(node)):
                     self._add(
                         lineno=getattr(part, "lineno", node.lineno),
                         col_offset=getattr(part, "col_offset", node.col_offset),
