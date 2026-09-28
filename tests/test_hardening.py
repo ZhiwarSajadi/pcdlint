@@ -2,6 +2,8 @@
 
 import textwrap
 
+import pytest
+
 from pcdlint.analyzer import analyze_code
 
 
@@ -825,3 +827,43 @@ def test_utf8_bom_file_is_analyzed_not_rejected(tmp_path) -> None:
 
     assert errors == [], f"BOM file was rejected: {errors}"
     assert [d.rule_id for d in diagnostics] == ["PCL003"]
+
+
+# --- the LLM sink must match the SDK call shapes, not substrings ----------
+
+_TINTED_SYSTEM = '(model="m", system=f"Time: {datetime.now()}" ' \
+                 '+ "STATIC RULES " * 30)\n'
+
+
+@pytest.mark.parametrize("call", [
+    "client.chat.completions.create",
+    "client.chat.completions.parse",
+    "client.beta.chat.completions.parse",
+    "client.responses.create",
+    "client.responses.parse",
+    "client.responses.stream",
+    "client.messages.create",
+    "client.messages.stream",
+    "client.chat.completions.stream",
+    "client.beta.messages.create",
+    "client.aio.messages.create",
+    "AsyncAnthropic().messages.create",
+    "get_client().chat.completions.create",
+])
+def test_pcl001_recognizes_sdk_call_shapes(call: str) -> None:
+    """Every documented Anthropic/OpenAI entry point must be a prompt sink."""
+    source = "from datetime import datetime\n" + call + _TINTED_SYSTEM
+    assert "PCL001" in _codes(source), f"{call} was not treated as an LLM sink"
+
+
+@pytest.mark.parametrize("call", [
+    # "messages"/"create" appear as substrings, but the method is not one of
+    # the SDK's terminal verbs -- substring matching used to fire on these.
+    "self.messages_repo.create_user",
+    "db.messages.create_index",
+    "x.completions.recreate",
+])
+def test_plain_python_calls_are_not_llm_sinks(call: str) -> None:
+    """A local object with a coincidental name must not be judged as a sink."""
+    source = "from datetime import datetime\n" + call + _TINTED_SYSTEM
+    assert _codes(source) == [], f"{call} was wrongly treated as an LLM sink"

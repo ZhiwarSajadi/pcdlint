@@ -9,6 +9,15 @@ from pcdlint.taint import TaintTracker
 # Substrings that mark an assignment target as prompt/LLM-prefix material.
 PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "context")
 
+# The terminal method and the resource it hangs off for every documented
+# Anthropic and OpenAI entry point -- create, the structured-output parse
+# variants, and the streaming variants. Matched as exact names, so
+# `beta.messages.create` counts and `messages_repo.create_user` does not.
+# Deliberately absent: `messages.count_tokens`, which never starts a
+# completion and so never invalidates a cache prefix.
+_SINK_METHODS = frozenset({"create", "parse", "stream"})
+_SINK_RESOURCES = frozenset({"completions", "messages", "responses"})
+
 # Every rule this engine can emit. Selectors and disable comments are validated
 # against it so a typo can never silently switch a rule off (or on).
 KNOWN_RULE_IDS: frozenset = frozenset({"PCL001", "PCL002", "PCL003", "PCL004"})
@@ -123,19 +132,19 @@ class RuleEngine:
     def _is_llm_api_call(self, node: ast.Call) -> bool:
         func = node.func
         if isinstance(func, ast.Attribute):
-            parts = []
+            # Innermost-first: parts[0] is the method, parts[1] the resource
+            # it hangs off. Both must match exactly. Substring matching used
+            # to accept `db.messages.create_index` and `x.completions.recreate`
+            # while missing `chat.completions.parse`, which never contains
+            # "create" at all.
+            parts: list[str] = []
             current: ast.expr = func
             while isinstance(current, ast.Attribute):
                 parts.append(current.attr)
                 current = current.value
-            if isinstance(current, ast.Name):
-                parts.append(current.id)
-            full_name = ".".join(reversed(parts))
-            if "completions" in full_name and "create" in full_name:
-                return True
-            if "messages" in full_name and "create" in full_name:
-                return True
-            if "responses" in full_name and "create" in full_name:
+            if (len(parts) >= 2
+                    and parts[0] in _SINK_METHODS
+                    and parts[1] in _SINK_RESOURCES):
                 return True
         # No keyword fallback. ``messages=`` plus ``model=`` is what any local
         # ``def render(messages, model)`` looks like, and treating it as a sink

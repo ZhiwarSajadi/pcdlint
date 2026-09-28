@@ -17,6 +17,13 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- LLM sink detection now matches the SDK call shape exactly instead of
+  searching for substrings. Newly recognised: `chat.completions.parse`,
+  `beta.chat.completions.parse`, `responses.parse`, `responses.stream`,
+  `messages.stream`, `chat.completions.stream`, `beta.messages.create`, and
+  any async client spelling the same shapes. No longer mistaken for a sink:
+  `self.messages_repo.create_user(...)`, `db.messages.create_index(...)` and
+  `x.completions.recreate(...)`.
 - Suppression markers no longer have to open the comment. `# type: ignore  #
   pcdlint: disable` and `# noqa: E501 pcdlint: disable` are a single comment
   token and used to be ignored, as was the unpadded `#pcdlint:disable`. The
