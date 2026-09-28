@@ -1,7 +1,7 @@
 """Autofix spans: PCL002 gets sort_keys, PCL003 gets sorted(...)."""
 
 from pcdlint.analyzer import analyze_code
-from pcdlint.models import TextEdit
+from pcdlint.models import Diagnostic, TextEdit
 
 PCL002_TAIL = (
     "client.messages.create(model='m', messages=["
@@ -220,3 +220,50 @@ def test_cli_fix_leaves_unfixable_finding_and_exits_1(tmp_path, monkeypatch) -> 
 
     assert target.read_text(encoding="utf-8") == source
     assert code == 1
+
+
+def test_apply_fix_refuses_a_rewrite_that_no_longer_parses(tmp_path) -> None:
+    """A fix that breaks the file is reported, never written."""
+    from pcdlint.cli import _apply_fixes
+
+    target = tmp_path / "sample.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    broken = Diagnostic(
+        file_path=str(target), lineno=1, col_offset=0, rule_id="PCL002",
+        rule_name="unsorted-json-in-prefix", message="m",
+        fix_suggestion="f", severity="WARNING",
+        edits=(TextEdit(1, 0, 1, 0, "def broken("),),
+    )
+
+    changed, _skipped, errors = _apply_fixes([broken])
+
+    assert changed == 0
+    assert errors and "invalid syntax" in errors[0]
+    assert target.read_text(encoding="utf-8") == "x = 1\n"
+
+
+def test_cli_fix_reports_findings_it_could_not_fix(tmp_path, monkeypatch,
+                                                   capsys) -> None:
+    import sys
+
+    from pcdlint.cli import main
+
+    source = (
+        "from datetime import datetime\n"
+        "system = f'{datetime.now()} ' + 'STATIC RULES ' * 30\n"
+        "client.messages.create(model='m', system=system, messages=[])\n"
+    )
+    target = tmp_path / "sample.py"
+    target.write_text(source, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint", "check", "sample.py", "--fix"]
+        main()
+        err = capsys.readouterr().err
+    finally:
+        sys.argv = old_argv
+
+    assert "fixed 0 file(s)" in err
+    assert "1 finding(s) have no automatic fix" in err
