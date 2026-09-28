@@ -319,6 +319,41 @@ def test_fix_with_diff_still_fails_on_a_changed_unfixable_finding(
     assert "PCL001" in out
 
 
+ACCENTED = "café.py"
+
+
+def test_diff_reports_findings_on_a_changed_line_in_an_accented_file(
+        tmp_path, monkeypatch, capsys) -> None:
+    """git octal-quotes non-ASCII paths in diff headers by default.
+
+    ``+++ "caf\\303\\251.py"`` never matches the real path, so every finding
+    in the file was dropped and the run reported clean.
+    """
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / ACCENTED).write_text(CLEAN, encoding="utf-8")
+    _git(["add", "."], tmp_path)
+    _git(["commit", "-q", "-m", "accents"], tmp_path)
+    (tmp_path / ACCENTED).write_text(BUGGY, encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", ACCENTED, "--diff"], capsys)
+
+    assert code == 1, out
+    assert "PCL001" in out
+
+
+def test_diff_reports_findings_in_an_untracked_accented_file(tmp_path,
+                                                             monkeypatch,
+                                                             capsys) -> None:
+    """Untracked listing must survive the same quoting rules."""
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / ACCENTED).write_text(BUGGY, encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", ACCENTED, "--diff"], capsys)
+
+    assert code == 1, out
+    assert "PCL001" in out
+
+
 def test_sarif_uri_keeps_a_path_outside_the_working_tree(tmp_path,
                                                          monkeypatch) -> None:
     """Code Scanning wants a relative URI, but a path it cannot relativize

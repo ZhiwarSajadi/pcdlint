@@ -89,9 +89,12 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
 def _git_output(args: list) -> tuple[str, str]:
     """Run git; returns ``(stdout, error)``, with ``error`` empty on success."""
     try:
-        result = subprocess.run(["git", *args], capture_output=True,
-                                text=True, encoding="utf-8", errors="replace",
-                                check=False)
+        # quotePath off: git octal-escapes non-ASCII paths by default, so the
+        # header reads ``+++ "caf\303\251.py"`` and never matches the real
+        # file -- which silently dropped every finding in it.
+        result = subprocess.run(
+            ["git", "-c", "core.quotePath=false", *args], capture_output=True,
+            text=True, encoding="utf-8", errors="replace", check=False)
     except OSError as exc:
         return "", str(exc)
     if result.returncode != 0:
@@ -152,12 +155,13 @@ def _filter_to_changed(diagnostics: list, ref: str) -> tuple[list, list[str]]:
     # ``git diff REF`` never mentions a file nobody has added, so a brand-new
     # file reported clean -- the exact false clean exit 2 exists to prevent.
     # Untracked files count as wholly new: every line in one was introduced
-    # by this change. --exclude-standard keeps .gitignore'd files out.
+    # by this change. --exclude-standard keeps .gitignore'd files out, and -z
+    # NUL-separates so no name can be mangled by quoting or by a newline.
     others, others_error = _git_output(
-        ["ls-files", "--others", "--exclude-standard", "--full-name"])
+        ["ls-files", "-z", "--others", "--exclude-standard", "--full-name"])
     if others_error:
         return [], [f"--diff could not list untracked files: {others_error}"]
-    untracked = {_absolute(line, root) for line in others.splitlines() if line}
+    untracked = {_absolute(name, root) for name in others.split("\0") if name}
 
     return [
         d for d in diagnostics

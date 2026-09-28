@@ -8,6 +8,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `--diff` no longer drops files whose names are not plain ASCII. git
+  octal-quotes such paths by default (`+++ "caf\303\251.py"`), so the header
+  never matched the real file and its findings vanished; git now runs with
+  `core.quotePath=false`, and the untracked-file listing is read with `-z`
+  so names cannot be mangled by quoting at all.
 - PCL002 no longer offers an autofix for a `json.dumps()` that unpacks
   `**kwargs`. Appending `, sort_keys=True` to `json.dumps(x, **opts)`
   parses cleanly -- so the post-fix `ast.parse` guard could not see it --
