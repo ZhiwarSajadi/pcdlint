@@ -92,7 +92,7 @@ pcdlint.analyzer.analyze_path(_ex) / analyze_code(_ex)
         │
         ├─► pcdlint.rules.RuleEngine.run(tree, file_path)
         │     - Pre-scans for variables that reach an LLM sink call
-        │     - Evaluates AST nodes against 4 lint rules (source-order walk)
+        │     - Evaluates AST nodes against 5 lint rules (source-order walk)
         │     - PCL002/PCL003 attach TextEdit spans for --fix; the other two cannot
         │
         ├─► pcdlint.disables.parse(source_code) + pcdlint.config.load_for(file_path)
@@ -129,6 +129,7 @@ spans and application), `tests/test_output.py` (SARIF and `--diff`) and
 | `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True` whose result reaches a prompt or LLM call (tracked through intermediate variables) |
 | `PCL003` | `set-iteration-in-prompt` | ERROR | ✅ | Unsorted sets in `.join()`, `str()`, or f-string interpolations |
 | `PCL004` | `dynamic-tools-mutation` | WARNING | — | `tools` parameter altered conditionally in if/else, shuffled, built from an unordered set, or assembled from a branch-assigned helper |
+| `PCL005` | `taint-before-cache-breakpoint` | ERROR | — | Taint anywhere before the last `cache_control` breakpoint on an Anthropic `messages` call — a total miss, which PCL001's static-first ordering cannot see |
 
 ### Package Structure & Aliases
 - `src/pcdlint/`: Primary implementation containing `analyzer.py`, `taint.py`, `rules.py`, `models.py`, `cli.py`, `fixer.py` (applies the `TextEdit` spans a rule attached — byte-precise splicing, overlap dropping), plus `disables.py` (parses `# pcdlint: disable` comments with `tokenize`) and `config.py` (reads `[tool.pcdlint]` from the nearest `pyproject.toml` above each file, via `tomllib`/`tomli`).

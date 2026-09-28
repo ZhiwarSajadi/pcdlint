@@ -62,9 +62,10 @@ client.chat.completions.create(
 | `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True` produces non-deterministic output |
 | `PCL003` | `set-iteration-in-prompt` | ERROR | ✅ | Python's `PYTHONHASHSEED` randomizes set iteration order across processes |
 | `PCL004` | `dynamic-tools-mutation` | WARNING | — | Changing tool definition order invalidates the entire prompt cache hierarchy |
+| `PCL005` | `taint-before-cache-breakpoint` | ERROR | — | Dynamic value anywhere before an Anthropic `cache_control` breakpoint |
 
-`PCL001` and `PCL004` have no mechanical fix: only you know where the dynamic
-value belongs, or what the tool order should be.
+`PCL001`, `PCL004` and `PCL005` have no mechanical fix: only you know where
+the dynamic value belongs, or what the tool order should be.
 
 ---
 

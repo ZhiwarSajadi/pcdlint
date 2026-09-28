@@ -56,7 +56,8 @@ def test_sarif_lists_every_known_rule(tmp_path, monkeypatch, capsys) -> None:
     _write(tmp_path, monkeypatch)
     data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
     rules = data["runs"][0]["tool"]["driver"]["rules"]
-    assert {r["id"] for r in rules} == {"PCL001", "PCL002", "PCL003", "PCL004"}
+    assert {r["id"] for r in rules} == {"PCL001", "PCL002", "PCL003",
+                                        "PCL004", "PCL005"}
     for rule in rules:
         assert rule["shortDescription"]["text"]
         assert rule["helpUri"]

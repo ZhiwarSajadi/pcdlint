@@ -20,7 +20,9 @@ _SINK_RESOURCES = frozenset({"completions", "messages", "responses"})
 
 # Every rule this engine can emit. Selectors and disable comments are validated
 # against it so a typo can never silently switch a rule off (or on).
-KNOWN_RULE_IDS: frozenset = frozenset({"PCL001", "PCL002", "PCL003", "PCL004"})
+KNOWN_RULE_IDS: frozenset = frozenset(
+    {"PCL001", "PCL002", "PCL003", "PCL004", "PCL005"}
+)
 
 # One-line catalog used by machine-readable output (SARIF). The full message
 # and fix text live on each Diagnostic; this is what a rule list shows before
@@ -30,6 +32,7 @@ RULE_SHORT_DESCRIPTIONS: dict[str, str] = {
     "PCL002": "json.dumps() without sort_keys=True reaching a prompt",
     "PCL003": "Unsorted set iterated while building prompt text",
     "PCL004": "tools list assembled or mutated in a non-deterministic order",
+    "PCL005": "Dynamic value before a cache_control breakpoint, a total miss on Anthropic",
 }
 
 
@@ -73,6 +76,9 @@ class RuleEngine:
         # PCL003 fire on a json.dumps()/join() passed inline instead of only
         # on one that went through a variable.
         self._nodes_in_llm_sink: set[int] = set()
+        # The sink currently being judged, so a fix suggestion can speak to
+        # the provider it belongs to.
+        self._sink: ast.Call | None = None
 
     def prepare(self, tree: ast.AST) -> None:
         """Pre-scan AST to collect what reaches an LLM API call."""
@@ -125,33 +131,42 @@ class RuleEngine:
 
     def check_node(self, node: ast.AST) -> None:
         self._check_pcl001(node)
+        self._check_pcl005(node)
         self._check_pcl002(node)
         self._check_pcl003(node)
         self._check_pcl004(node)
 
+    @staticmethod
+    def _call_parts(node: ast.Call) -> list[str]:
+        """Attribute chain of ``node.func``, outermost attribute first."""
+        parts: list[str] = []
+        current: ast.expr = node.func
+        while isinstance(current, ast.Attribute):
+            parts.append(current.attr)
+            current = current.value
+        return parts
+
     def _is_llm_api_call(self, node: ast.Call) -> bool:
-        func = node.func
-        if isinstance(func, ast.Attribute):
-            # Innermost-first: parts[0] is the method, parts[1] the resource
-            # it hangs off. Both must match exactly. Substring matching used
-            # to accept `db.messages.create_index` and `x.completions.recreate`
-            # while missing `chat.completions.parse`, which never contains
-            # "create" at all.
-            parts: list[str] = []
-            current: ast.expr = func
-            while isinstance(current, ast.Attribute):
-                parts.append(current.attr)
-                current = current.value
-            if (len(parts) >= 2
-                    and parts[0] in _SINK_METHODS
-                    and parts[1] in _SINK_RESOURCES):
-                return True
-        # No keyword fallback. ``messages=`` plus ``model=`` is what any local
-        # ``def render(messages, model)`` looks like, and treating it as a sink
-        # means judging a plain helper's arguments as prompt prefixes. The SDK
-        # shapes above cover Anthropic, OpenAI chat and OpenAI responses; a
-        # bespoke wrapper is a name this linter cannot know.
-        return False
+        # Both halves must match exactly. Substring matching used to accept
+        # `db.messages.create_index` and `x.completions.recreate` while
+        # missing `chat.completions.parse`, which never contains "create" at
+        # all.
+        #
+        # No keyword fallback either. ``messages=`` plus ``model=`` is what
+        # any local ``def render(messages, model)`` looks like, and treating
+        # it as a sink means judging a plain helper's arguments as prompt
+        # prefixes. The shapes below cover Anthropic, OpenAI chat and OpenAI
+        # responses; a bespoke wrapper is a name this linter cannot know.
+        parts = self._call_parts(node)
+        return (len(parts) >= 2
+                and parts[0] in _SINK_METHODS
+                and parts[1] in _SINK_RESOURCES)
+
+    @classmethod
+    def _is_anthropic_sink(cls, node: ast.Call) -> bool:
+        """True for the Anthropic `messages` resource (create/stream/beta)."""
+        parts = cls._call_parts(node)
+        return len(parts) >= 2 and parts[1] == "messages"
 
     @staticmethod
     def _keyword_node(node: ast.Call, name: str) -> ast.AST | None:
@@ -218,9 +233,24 @@ class RuleEngine:
             rule_id="PCL001",
             rule_name="prefix-taint-injection",
             message=f"Prefix taint detected: '{origin.source_call}' {context}",
-            fix_suggestion=f"Move dynamic value '{origin.source_call}' to the end of the static prompt or into the final user message to preserve prefix cache hits.",
+            fix_suggestion=self._prefix_fix(origin.source_call),
             severity="ERROR",
         )
+
+    def _prefix_fix(self, source_call: str) -> str:
+        """Where to move the value, phrased for the provider being called.
+
+        OpenAI caches the longest matching prefix, so the dynamic value
+        belongs at the end. Anthropic only hits when every byte up to a
+        cache_control breakpoint is identical, so it belongs after one.
+        """
+        if self._sink is not None and self._is_anthropic_sink(self._sink):
+            return (f"Move the dynamic value '{source_call}' into a content "
+                    "block after the last cache_control breakpoint, or into "
+                    "the final user message.")
+        return (f"Move dynamic value '{source_call}' to the end of the static "
+                "prompt or into the final user message to preserve prefix "
+                "cache hits.")
 
     def _report_first_taint(self, values: Sequence[ast.AST], context: str,
                             *fallbacks: ast.AST | None) -> bool:
@@ -237,8 +267,82 @@ class RuleEngine:
             return
         if not self._is_llm_api_call(node):
             return
+        self._sink = node
         self._check_pcl001_system(node)
         self._check_pcl001_messages(node)
+
+    # --- PCL005: taint-before-cache-breakpoint ---
+
+    @staticmethod
+    def _blocks_of(value: ast.AST | None) -> list[ast.AST]:
+        """The content blocks of a list-shaped argument, or the scalar itself."""
+        if value is None:
+            return []
+        if isinstance(value, ast.List):
+            return list(value.elts)
+        return [value]
+
+    def _cache_units(self, node: ast.Call) -> list[tuple[list, ast.AST]]:
+        """Every system block and message in prompt order, as (values, carrier).
+
+        ``values`` is what gets read for taint; ``carrier`` is the node a
+        cache_control breakpoint can sit on.
+        """
+        units: list[tuple[list, ast.AST]] = []
+        for argument in (self._get_system_arg(node), self._get_messages_arg(node)):
+            for block in self._blocks_of(argument):
+                resolved = (self._resolve_list_node(block)
+                            if isinstance(block, ast.Name) else None)
+                for item in (resolved.elts if resolved else [block]):
+                    inner = self._resolve_dict_node(item)
+                    if inner is not None:
+                        units.append((list(inner.values), inner))
+                    else:
+                        units.append(([item], item))
+        return units
+
+    def _check_pcl005(self, node: ast.AST) -> None:
+        """Anthropic's cache is all-or-nothing up to the last breakpoint.
+
+        OpenAI keeps the longest matching prefix, so a dynamic value at the
+        end still earns partial hits and PCL001's "static first" ordering
+        says enough. Anthropic hits only when every byte up to a
+        cache_control breakpoint is identical: the same code is a 100% miss
+        there, and PCL001 never reports it because the static text comes
+        first.
+        """
+        if not isinstance(node, ast.Call):
+            return
+        if not self._is_llm_api_call(node):
+            return
+        if not self._is_anthropic_sink(node):
+            return
+        units = self._cache_units(node)
+        last_breakpoint = -1
+        for index, (_values, carrier) in enumerate(units):
+            if self._has_cache_control(carrier):
+                last_breakpoint = index
+        if last_breakpoint < 0:
+            return
+        for values, _carrier in units[:last_breakpoint + 1]:
+            for value in values:
+                origin = self.tracker.get_taint_origin_of_node(value)
+                if origin is None:
+                    continue
+                self._add(
+                    lineno=self._line_of(value, node),
+                    col_offset=self._col_of(value, node),
+                    rule_id="PCL005",
+                    rule_name="taint-before-cache-breakpoint",
+                    message=(f"Prefix taint detected: '{origin.source_call}' "
+                             "before a cache_control breakpoint, a total miss"),
+                    fix_suggestion=(
+                        "Move the dynamic value into a content block after "
+                        "the last cache_control breakpoint, or into the "
+                        "final user message."),
+                    severity="ERROR",
+                )
+                return
 
     def _check_pcl001_system(self, node: ast.Call) -> None:
         system_val = self._get_system_arg(node)

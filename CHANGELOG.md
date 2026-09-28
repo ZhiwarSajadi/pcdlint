@@ -6,6 +6,19 @@ All notable changes to pcdlint are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `PCL005 taint-before-cache-breakpoint` (ERROR). OpenAI caches the longest
+  matching prefix, so a dynamic value at the end still earns partial hits and
+  `PCL001`'s "static first" test is enough. Anthropic only hits when every
+  byte up to a `cache_control` breakpoint is identical, so the same code is a
+  **100% miss** there -- and `PCL001` never reported it because the static
+  text came first. `PCL005` flags any taint in a system block or message up
+  to and including the last one carrying `cache_control`, on `messages.*`
+  calls only, when a breakpoint is actually present. `PCL001`'s fix text now
+  speaks to the provider too: Anthropic is told to move the value after a
+  breakpoint, OpenAI to the end.
+
 ### Changed
 
 - A `# pcdlint: disable` alone on its own line now switches off **the next

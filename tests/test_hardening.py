@@ -1117,3 +1117,99 @@ def test_unassigned_uppercase_name_is_still_static() -> None:
         'client.messages.create(model="m", system=system)\n'
     )
     assert _codes(source) == [], _codes(source)
+
+
+# --- P2-1: Anthropic caches only up to a cache_control breakpoint ---------
+
+_CACHED_SYSTEM_BLOCK = (
+    "from datetime import datetime\n"
+    "STATIC_RULES = 'rules ' * 30\n"
+    "client.messages.create(\n"
+    '    model="m",\n'
+    "    system=[{'type': 'text',\n"
+    "             'text': STATIC_RULES + f'{datetime.now()}',\n"
+    "             'cache_control': {'type': 'ephemeral'}}],\n"
+    "    messages=[{'role': 'user', 'content': 'hi'}],\n"
+    ")\n"
+)
+
+_NO_BREAKPOINT = (
+    "from datetime import datetime\n"
+    "STATIC_RULES = 'rules ' * 30\n"
+    "client.messages.create(\n"
+    '    model="m",\n'
+    "    system=[{'type': 'text',\n"
+    "             'text': STATIC_RULES + f'{datetime.now()}'}],\n"
+    "    messages=[{'role': 'user', 'content': 'hi'}],\n"
+    ")\n"
+)
+
+_OPENAI_SINK = (
+    "from datetime import datetime\n"
+    "STATIC_RULES = 'rules ' * 30\n"
+    "client.chat.completions.create(\n"
+    '    model="m",\n'
+    "    messages=[{'role': 'system',\n"
+    "               'content': STATIC_RULES + f'{datetime.now()}',\n"
+    "               'cache_control': {'type': 'ephemeral'}}],\n"
+    ")\n"
+)
+
+_TAINT_AFTER_BREAKPOINT = (
+    "from datetime import datetime\n"
+    "STATIC_RULES = 'rules ' * 30\n"
+    "client.messages.create(\n"
+    '    model="m",\n'
+    "    system=[{'type': 'text', 'text': STATIC_RULES,\n"
+    "             'cache_control': {'type': 'ephemeral'}}],\n"
+    "    messages=[{'role': 'user', 'content': f'{datetime.now()}'}],\n"
+    ")\n"
+)
+
+
+def test_pcl005_taint_inside_a_cached_block_is_a_total_miss() -> None:
+    """Static first, taint last -- PCL001 calls that a partial hit.
+
+    Anthropic hits only when every byte up to the breakpoint is identical,
+    so this is a 100% miss and PCL001's ordering test never sees it.
+    """
+    assert "PCL005" in _codes(_CACHED_SYSTEM_BLOCK), _codes(_CACHED_SYSTEM_BLOCK)
+
+
+def test_pcl005_fires_on_the_anthropic_stream_endpoint() -> None:
+    source = _CACHED_SYSTEM_BLOCK.replace("client.messages.create(",
+                                          "client.messages.stream(")
+    assert "PCL005" in _codes(source), _codes(source)
+
+
+def test_pcl005_needs_a_cache_breakpoint() -> None:
+    """Without cache_control nothing is cached, so nothing is invalidated."""
+    assert _codes(_NO_BREAKPOINT) == [], _codes(_NO_BREAKPOINT)
+
+
+def test_pcl005_is_not_applied_to_openai_sinks() -> None:
+    """OpenAI caches the longest matching prefix, so taint at the end is fine."""
+    assert _codes(_OPENAI_SINK) == [], _codes(_OPENAI_SINK)
+
+
+def test_pcl005_ignores_taint_after_the_last_breakpoint() -> None:
+    """Only the bytes up to the breakpoint have to match exactly."""
+    assert "PCL005" not in _codes(_TAINT_AFTER_BREAKPOINT), \
+        _codes(_TAINT_AFTER_BREAKPOINT)
+
+
+def test_pcl005_is_an_error_with_no_autofix() -> None:
+    """Where the dynamic value goes is a design decision, not a rewrite."""
+    found = [d for d in analyze_code(_CACHED_SYSTEM_BLOCK, "case.py")
+             if d.rule_id == "PCL005"]
+    assert len(found) == 1, f"expected exactly one PCL005, got {found}"
+    assert found[0].severity == "ERROR"
+    assert found[0].edits == ()
+
+
+def test_pcl005_is_a_known_rule_id_with_a_description() -> None:
+    """Selectors, disable comments and the SARIF rule table all key off these."""
+    from pcdlint.rules import KNOWN_RULE_IDS, RULE_SHORT_DESCRIPTIONS
+
+    assert "PCL005" in KNOWN_RULE_IDS
+    assert RULE_SHORT_DESCRIPTIONS["PCL005"]
