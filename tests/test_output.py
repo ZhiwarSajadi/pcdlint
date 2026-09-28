@@ -274,6 +274,51 @@ def test_diff_parser_skips_malformed_hunk_headers() -> None:
     }
 
 
+# --- --fix combined with --diff ------------------------------------------
+
+# Line 3 carries an unfixable PCL001; line 4 a fixable PCL002. Only line 4
+# is touched by the change under review.
+MIXED = (
+    "import json\n"
+    "from datetime import datetime\n"
+    "client.messages.create(model='m', "
+    "system=f'{datetime.now()} ' + 'STATIC RULES ' * 30, messages=[])\n"
+    "prompt = json.dumps({'b': 1, 'a': 2})\n"
+)
+
+MIXED_CHANGED = MIXED.replace("{'b': 1, 'a': 2}", "{'b': 1, 'a': 2, 'c': 3}")
+
+
+def test_fix_with_diff_reports_only_the_changed_line(tmp_path, monkeypatch,
+                                                     capsys) -> None:
+    """--fix re-analyses after rewriting; the diff filter must survive it.
+
+    Without re-applying the filter the exit code described every finding in
+    the touched file rather than every finding the change introduced, so an
+    untouched PCL001 on line 3 turned a clean diff run into exit 1.
+    """
+    _repo(tmp_path, monkeypatch, MIXED)
+    (tmp_path / "sample.py").write_text(MIXED_CHANGED, encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", "sample.py", "--fix", "--diff"], capsys)
+
+    assert "sort_keys=True" in (tmp_path / "sample.py").read_text(encoding="utf-8")
+    assert code == 0, out
+    assert "PCL001" not in out, out
+
+
+def test_fix_with_diff_still_fails_on_a_changed_unfixable_finding(
+        tmp_path, monkeypatch, capsys) -> None:
+    """Guard: re-applying the filter must not hide a finding on a changed line."""
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / "sample.py").write_text(BUGGY, encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", "sample.py", "--fix", "--diff"], capsys)
+
+    assert code == 1, out
+    assert "PCL001" in out
+
+
 def test_sarif_uri_keeps_a_path_outside_the_working_tree(tmp_path,
                                                          monkeypatch) -> None:
     """Code Scanning wants a relative URI, but a path it cannot relativize

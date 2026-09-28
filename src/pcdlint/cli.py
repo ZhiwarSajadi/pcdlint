@@ -262,6 +262,13 @@ def main() -> int:
             # disk now, not what was there before the rewrite.
             all_diagnostics, recheck_errors = _analyze_paths(raw_paths, select, ignore)
             all_errors.extend(recheck_errors)
+            if args.diff is not None:
+                # The rewrite re-analysed every file, so the filter has to be
+                # reapplied or the exit code covers pre-existing findings on
+                # lines this change never touched.
+                all_diagnostics, diff_errors = _filter_to_changed(
+                    all_diagnostics, args.diff)
+                all_errors.extend(diff_errors)
         if changed or skipped:
             print(
                 f"pcdlint: fixed {changed} file(s); "

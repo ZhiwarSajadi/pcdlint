@@ -4,6 +4,14 @@ All notable changes to pcdlint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `--fix` combined with `--diff` now re-applies the diff filter after the
+  post-rewrite re-analysis, so the report and the exit code cover only the
+  lines the change introduced rather than every finding in the touched files.
+
 ## [0.2.0] - 2026-09-28
 
 Marking a release means tagging it `vX.Y.Z`: the publish workflow refuses to
@@ -61,5 +69,6 @@ First release: the four rules (PCL001 prefix-taint, PCL002 unsorted JSON,
 PCL003 unsorted set, PCL004 dynamic tools), text and JSON output, the
 `pclint` alias, and `python -m pcdlint`.
 
+[Unreleased]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/ZhiwarSajadi/pcdlint/releases/tag/v0.1.0
