@@ -354,6 +354,65 @@ def test_diff_reports_findings_in_an_untracked_accented_file(tmp_path,
     assert "PCL001" in out
 
 
+def test_diff_parser_does_not_take_an_added_line_for_a_file_header() -> None:
+    """An added line whose text is "++ foo" is rendered as "+++ foo".
+
+    Read as a file header it steals every later hunk, so the findings those
+    hunks describe are credited to a file that does not exist and dropped.
+    """
+    from pathlib import Path
+
+    from pcdlint.cli import _parse_added_lines
+
+    root = Path.cwd().resolve()
+    # --no-prefix, so the header carries the plain path the findings use.
+    patch = (
+        "--- one.py\n"
+        "+++ one.py\n"
+        "@@ -1,1 +1,3 @@\n"
+        "-one\n"
+        "+one\n"
+        "+++ foo\n"           # added line; its text is "++ foo"
+        "+bar\n"
+        "@@ -9,1 +11,2 @@\n"
+        "-two\n"
+        "+two\n"
+        "+extra\n"
+    )
+
+    assert _parse_added_lines(patch, root) == {
+        (root / "one.py").resolve().as_posix(): {1, 2, 3, 11, 12}
+    }
+
+
+def test_diff_parser_does_not_take_a_removed_line_for_a_file_header() -> None:
+    """A removed line whose text is "-- x" renders as "--- x".
+
+    It must not start a new file section: the added line that follows it
+    ("++ y" -> "+++ y") belongs to the same hunk, not to a file called y.
+    """
+    from pathlib import Path
+
+    from pcdlint.cli import _parse_added_lines
+
+    root = Path.cwd().resolve()
+    patch = (
+        "--- one.py\n"
+        "+++ one.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        "--- x\n"             # removed line; its text is "-- x"
+        "+++ y\n"             # added line; its text is "++ y"
+        "+z\n"
+        "@@ -9,1 +11,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    assert _parse_added_lines(patch, root) == {
+        (root / "one.py").resolve().as_posix(): {1, 2, 11}
+    }
+
+
 def test_sarif_uri_keeps_a_path_outside_the_working_tree(tmp_path,
                                                          monkeypatch) -> None:
     """Code Scanning wants a relative URI, but a path it cannot relativize

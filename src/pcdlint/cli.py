@@ -111,11 +111,44 @@ def _absolute(path_text: str, root: Path) -> str:
     return path.resolve().as_posix()
 
 
+def _hunk_span(spec: str) -> tuple[int, int] | None:
+    """``(start, count)`` of one ``@@ -a,b +c,d @@`` side, or None if malformed."""
+    start_text, _, count_text = spec.partition(",")
+    try:
+        start = int(start_text)
+        count = int(count_text) if count_text else 1
+    except ValueError:
+        return None
+    return start, count
+
+
 def _parse_added_lines(patch: str, root: Path) -> dict[str, set[int]]:
-    """Absolute POSIX path -> the line numbers each ``@@`` hunk adds."""
+    """Absolute POSIX path -> the line numbers each ``@@`` hunk adds.
+
+    The body is consumed against the counts in its own header, so a content
+    line that merely *looks* like a file header cannot steal the file from
+    the hunks that follow it: an added line whose text is ``++ foo`` renders
+    as ``+++ foo``, and a removed line whose text is ``-- x`` renders as
+    ``--- x``.
+    """
     changed: dict[str, set[int]] = {}
     current: str | None = None
+    # Lines still owed by the hunk being read; both 0 between hunks, which
+    # is the only place a real +++ header can appear.
+    old_left = 0
+    new_left = 0
     for line in patch.splitlines():
+        if old_left > 0 or new_left > 0:
+            if line.startswith("\\"):
+                continue  # "\ No newline at end of file" is not a body line
+            if line.startswith("+"):
+                new_left -= 1
+            elif line.startswith("-"):
+                old_left -= 1
+            else:  # context line: it is part of both the old and the new file
+                old_left -= 1
+                new_left -= 1
+            continue
         if line.startswith("+++ "):
             target = line[4:].strip()
             current = None if target == "/dev/null" else _absolute(target, root)
@@ -123,15 +156,16 @@ def _parse_added_lines(patch: str, root: Path) -> dict[str, set[int]]:
             fields = line.split()
             if len(fields) < 3 or not fields[2].startswith("+"):
                 continue
-            start_text, _, count_text = fields[2][1:].partition(",")
-            try:
-                start = int(start_text)
-                count = int(count_text) if count_text else 1
-            except ValueError:
+            span = _hunk_span(fields[2])
+            if span is None:
                 continue
+            start, count = span
             if count > 0:
                 changed.setdefault(current, set()).update(
                     range(start, start + count))
+            new_left = count
+            old = _hunk_span(fields[1])
+            old_left = old[1] if old else 0
     return changed
 
 

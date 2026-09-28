@@ -8,6 +8,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `--diff` no longer misfiles hunks after a line that merely looks like a
+  file header. An added line whose text is `++ foo` renders as `+++ foo`
+  (and a removed `-- x` as `--- x`), which used to re-point the parser at a
+  file that does not exist and drop every later hunk. Each hunk body is now
+  consumed against the counts in its own header.
 - `--diff` no longer drops files whose names are not plain ASCII. git
   octal-quotes such paths by default (`+++ "caf\303\251.py"`), so the header
   never matched the real file and its findings vanished; git now runs with
