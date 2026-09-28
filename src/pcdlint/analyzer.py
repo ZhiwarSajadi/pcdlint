@@ -58,12 +58,15 @@ def _walk_stmts(tracker: TaintTracker, stmts: list, pass_no: int) -> None:
 def _track_simple(tracker: TaintTracker, stmt: ast.AST, pass_no: int) -> None:
     if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
         tracker.track_assignment(stmt)
-    elif pass_no == 0:
-        # Expression statements mutate lists in place, so they run once only.
-        if isinstance(stmt, ast.AugAssign):
-            tracker.track_aug_assign(stmt)
-        elif isinstance(stmt, ast.Expr):
-            tracker.track_expr_stmt(stmt)
+    elif isinstance(stmt, ast.Expr):
+        # Reaches the tracker on every pass: the idempotent marks inside
+        # (a shuffle tainting its argument) have to survive the reassignment
+        # a later pass makes, while the in-place list mutations stay gated
+        # on pass_no inside the tracker.
+        tracker.track_expr_stmt(stmt, pass_no)
+    elif pass_no == 0 and isinstance(stmt, ast.AugAssign):
+        # Augmented assignments are not idempotent either, so first pass only.
+        tracker.track_aug_assign(stmt)
 
 
 def _track_if(tracker: TaintTracker, node: ast.If, pass_no: int) -> None:

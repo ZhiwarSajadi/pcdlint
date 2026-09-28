@@ -16,26 +16,55 @@ Key = tuple[Scope, str]
 _V = TypeVar("_V")
 
 TAINT_SOURCES: dict[tuple, str] = {
+    # Key is (module or class, member); value is the fully qualified call name
+    # a resolved chain is matched against, at a dot boundary -- so
+    # `datetime.date.today` matches `date.today` while `event.time` does not
+    # match `time.time`.
     ("datetime", "now"): "datetime.now",
     ("datetime", "utcnow"): "datetime.utcnow",
+    ("datetime", "today"): "datetime.today",
     ("date", "today"): "date.today",
     ("time", "time"): "time.time",
     ("time", "time_ns"): "time.time_ns",
     ("time", "monotonic"): "time.monotonic",
     ("time", "perf_counter"): "time.perf_counter",
+    ("time", "strftime"): "time.strftime",
+    ("time", "ctime"): "time.ctime",
+    ("time", "localtime"): "time.localtime",
+    ("time", "gmtime"): "time.gmtime",
     ("uuid", "uuid4"): "uuid.uuid4",
     ("uuid", "uuid1"): "uuid.uuid1",
+    ("uuid", "uuid6"): "uuid.uuid6",
+    ("uuid", "uuid7"): "uuid.uuid7",
     ("random", "random"): "random.random",
     ("random", "randint"): "random.randint",
     ("random", "choice"): "random.choice",
     ("random", "choices"): "random.choices",
     ("random", "sample"): "random.sample",
     ("random", "randrange"): "random.randrange",
+    ("random", "uniform"): "random.uniform",
+    ("random", "getrandbits"): "random.getrandbits",
     ("secrets", "token_hex"): "secrets.token_hex",
     ("secrets", "token_urlsafe"): "secrets.token_urlsafe",
     ("secrets", "token_bytes"): "secrets.token_bytes",
     ("os", "urandom"): "os.urandom",
     ("os", "getpid"): "os.getpid",
+    # django.utils.timezone.now, reached through `from django.utils import
+    # timezone` (which the import table expands) or written out in full.
+    ("timezone", "now"): "timezone.now",
+    # pandas, reached through `import pandas as pd`.
+    ("Timestamp", "now"): "Timestamp.now",
+}
+
+# Sources that only read the clock when the caller leaves the time out. The
+# value is how many positional arguments make the call a pure function of
+# them: time.strftime(fmt, t), time.ctime(secs), time.localtime(secs),
+# time.gmtime(secs). Below that count the result varies between runs.
+_TIME_PARAM_SOURCES: dict[str, int] = {
+    "time.strftime": 2,
+    "time.ctime": 1,
+    "time.localtime": 1,
+    "time.gmtime": 1,
 }
 
 STATIC_PREFIX_NAMES: set[str] = {
@@ -167,6 +196,7 @@ class _Bindings:
         "set_orderable",
         "sets",
         "static",
+        "strings",
         "tainted",
         "tools_mutated",
     )
@@ -185,6 +215,9 @@ class _Bindings:
         # Sets whose elements provably share a total order. Only these may be
         # handed to sorted() by --fix: sorted() on {1, "a"} raises TypeError.
         self.set_orderable: set[Key] = set()
+        # Names bound to a str/bytes value, which is what decides whether
+        # hash(name) is salted by PYTHONHASHSEED.
+        self.strings: set[Key] = set()
 
     def merge(self, other: "_Bindings") -> None:
         self.tainted.update(other.tainted)
@@ -195,6 +228,7 @@ class _Bindings:
         self.branch.update(other.branch)
         self.json_unsorted.update(other.json_unsorted)
         self.set_orderable.update(other.set_orderable)
+        self.strings.update(other.strings)
         for key, flows in other.json_flows.items():
             self.json_flows.setdefault(key, set()).update(flows)
         self.lists.update(other.lists)
@@ -214,6 +248,7 @@ class _Bindings:
         clone.json_flows = {k: set(v) for k, v in self.json_flows.items()}
         clone.lists = dict(self.lists)
         clone.dicts = dict(self.dicts)
+        clone.strings = set(self.strings)
         return clone
 
     def paths_agree(self, key: Key, other: "_Bindings") -> bool:
@@ -243,6 +278,7 @@ class _Bindings:
         self.sets |= other.sets
         self.tools_mutated |= other.tools_mutated
         self.json_unsorted |= other.json_unsorted
+        self.strings |= other.strings
         # Intersection, not union: orderability is a safety claim, so it only
         # survives when every arm that rebinds the name proves it. An arm that
         # did not rebind keeps the pre-branch value, which is in both sides.
@@ -275,7 +311,8 @@ class _Bindings:
         # Separate name: these are sets, and the dict stores above would
         # otherwise drive mypy's inference for both loops.
         for set_store in (self.sets, self.tools_mutated, self.branch,
-                          self.json_unsorted, self.set_orderable):
+                          self.json_unsorted, self.set_orderable,
+                          self.strings):
             set_store.discard(key)
 
 
@@ -294,6 +331,10 @@ class TaintTracker:
         # same non-determinism as ``json.dumps`` and must be recognised.
         self._json_modules: set[str] = set()
         self._json_dumps: set[str] = set()
+        # Local name -> the fully qualified name it stands for, so
+        # ``import random as rnd`` and ``from uuid import uuid4 as u`` still
+        # resolve back to the module they came from.
+        self._imports: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Scopes and branch positions
@@ -304,10 +345,14 @@ class TaintTracker:
 
         Import bindings ride along on the same walk: ``J.dumps`` only means
         ``json.dumps`` because some earlier line said ``import json as J``,
-        and that has to be known before any rule judges a call. Ceiling:
+        and ``rnd.choice`` only means ``random.choice`` for the same reason.
+        They are queued as ``(lineno, col, local, qualified)`` and applied in
+        source order afterwards, because the walk visits siblings newest
+        first and Python resolves the *last* binding of a name. Ceiling:
         bindings are tracked as if file-global, so a local ``import json``
         inside a function still counts for the whole file.
         """
+        records: list[tuple[int, int, str, str]] = []
         stack: list[tuple[ast.AST, Scope, bool, bool, ast.AST | None]] = [
             (tree, MODULE_SCOPE, False, False, None),
         ]
@@ -318,7 +363,7 @@ class TaintTracker:
             self._node_cond[id(node)] = in_cond
             self._node_loop[id(node)] = in_loop
             self._node_loop_iter[id(node)] = loop_iter
-            self._record_imports(node)
+            self._record_imports(node, records)
             child_scope = scope
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 child_scope = scope + (node.name,)
@@ -326,17 +371,31 @@ class TaintTracker:
             flags = _child_flags(node, in_cond, in_loop, loop_iter, len(children))
             for child, (c_cond, c_loop, c_iter) in zip(children, flags):
                 stack.append((child, child_scope, c_cond, c_loop, c_iter))
+        for _lineno, _col, local, qualified in sorted(records):
+            self._imports[local] = qualified
 
-    def _record_imports(self, node: ast.AST) -> None:
-        """Remember how this file spells stdlib json, if it spells it at all."""
+    def _record_imports(self, node: ast.AST,
+                        records: list[tuple[int, int, str, str]]) -> None:
+        """Queue how this file spells stdlib json and its other imports."""
         if isinstance(node, ast.Import):
             for alias in node.names:
+                # `import a.b` binds only `a` (to `a`); `import a.b as z`
+                # binds `z` to `a.b`.
+                top = alias.name.split(".")[0]
+                records.append((node.lineno, node.col_offset,
+                                alias.asname or top,
+                                alias.name if alias.asname else top))
                 if alias.name == "json":
                     self._json_modules.add(alias.asname or alias.name)
-        elif isinstance(node, ast.ImportFrom) and node.module == "json":
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             for alias in node.names:
-                if alias.name == "dumps":
-                    self._json_dumps.add(alias.asname or alias.name)
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                records.append((node.lineno, node.col_offset, local,
+                                f"{node.module}.{alias.name}"))
+                if node.module == "json" and alias.name == "dumps":
+                    self._json_dumps.add(local)
 
     def scope_of(self, node: ast.AST) -> Scope:
         """Lexical scope of a node (module scope when unknown)."""
@@ -453,23 +512,74 @@ class TaintTracker:
     # Queries
     # ------------------------------------------------------------------
 
+    def _resolve_parts(self, parts: list[str]) -> str:
+        """Expand the leading identifier of a dotted chain through the imports.
+
+        ``rnd.choice`` only means ``random.choice`` because a line said
+        ``import random as rnd``; without that, the spelling says nothing.
+        """
+        if not parts:
+            return ""
+        base = self._imports.get(parts[0])
+        if base is None:
+            return ".".join(parts)
+        return ".".join([base, *parts[1:]])
+
+    @staticmethod
+    def _matched_source(name: str) -> str | None:
+        """TAINT_SOURCES entry that ``name`` spells, or None.
+
+        Matching is exact or on a dot boundary, never a substring: that is
+        what keeps ``event.time`` from matching ``time.time`` while letting
+        ``datetime.date.today`` match ``date.today``.
+        """
+        if not name:
+            return None
+        for full in TAINT_SOURCES.values():
+            if name == full or name.endswith("." + full):
+                return full
+        return None
+
+    def _value_is_stringy(self, node: ast.AST) -> bool:
+        """True when ``node`` is statically a str or bytes expression.
+
+        Decides whether ``hash(...)`` is salted by PYTHONHASHSEED: hashing a
+        number is a pure function of it, hashing a string is not.
+        """
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (str, bytes))
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return (self._value_is_stringy(node.left)
+                    or self._value_is_stringy(node.right))
+        if isinstance(node, ast.Name):
+            return self._has(self._b.strings, node.id, node)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id in ("str", "bytes", "repr")
+        return False
+
     def is_taint_source(self, node: ast.Call) -> TaintOrigin | None:
         """Check if an ast.Call is a known non-deterministic taint source."""
         dotted = _extract_dotted_name(node.func)
         if not dotted:
             return None
+        name = self._resolve_parts(dotted.split("."))
 
-        # Direct match in TAINT_SOURCES
-        for (mod, fn), full in TAINT_SOURCES.items():
-            if dotted == f"{mod}.{fn}" or dotted == full:
-                return TaintOrigin(variable_name="", source_call=full, lineno=node.lineno)
-            if dotted == fn:
-                return TaintOrigin(variable_name="", source_call=full, lineno=node.lineno)
-            # Support nested module access like datetime.datetime.now
-            if dotted.endswith(f".{fn}") and mod in dotted:
-                return TaintOrigin(variable_name="", source_call=full, lineno=node.lineno)
+        # hash() is a builtin, so it never arrives through the import table.
+        if name == "hash" and node.args and self._value_is_stringy(node.args[0]):
+            return TaintOrigin(variable_name="", source_call="hash",
+                               lineno=node.lineno)
 
-        return None
+        full = self._matched_source(name)
+        if full is None:
+            return None
+        # time.strftime(fmt, t) and friends only vary when the caller leaves
+        # the time out; with it they are pure functions of the argument.
+        enough_args = _TIME_PARAM_SOURCES.get(full)
+        if enough_args is not None and len(node.args) >= enough_args:
+            return None
+        return TaintOrigin(variable_name="", source_call=full, lineno=node.lineno)
 
     def is_static_prefix_solid(self, node: ast.AST) -> bool:
         """Check if node is a heavy static content string or static constant variable."""
@@ -676,6 +786,8 @@ class TaintTracker:
                 buf.branch.add(key)
             if self._has(self._b.json_unsorted, src, value):
                 buf.json_unsorted.add(key)
+            if self._has(self._b.strings, src, value):
+                buf.strings.add(key)
             flows = self._get(self._b.json_flows, src, value)
             if flows:
                 buf.json_flows[key] = set(flows)
@@ -744,6 +856,10 @@ class TaintTracker:
                     buf.tools_mutated.add(key)
 
         # 6. String constant assigned to UPPER_CASE variable
+        if isinstance(value, ast.Constant) and isinstance(value.value, (str, bytes)):
+            # Remembered for hash(): only str/bytes are salted by
+            # PYTHONHASHSEED, and the name alone does not say which.
+            buf.strings.add(key)
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
             if var_name.isupper():
                 buf.static[key] = value.value
@@ -751,6 +867,7 @@ class TaintTracker:
 
         # 7. JoinedStr (f-string) and BinOp (+) string concatenation
         if _is_string_concat(value):
+            buf.strings.add(key)
             parts = self._flatten_string_expr(value)
             origin = self.check_sequence_prefix_taint(parts)
             if origin:
@@ -768,6 +885,7 @@ class TaintTracker:
 
         # 8. Format call: "...".format(...)
         if isinstance(value, ast.Call) and self._is_format_call(value):
+            buf.strings.add(key)
             fmt_parts: list[ast.AST] = list(value.args)
             fmt_parts.extend(kw.value for kw in value.keywords if kw.value)
             origin = self.check_sequence_prefix_taint(fmt_parts) if fmt_parts else None
@@ -884,12 +1002,22 @@ class TaintTracker:
                     self._b.prefix_tainted[key] = origin
                     self._label_origin(key, node.target.id)
 
-    def track_expr_stmt(self, node: ast.Expr) -> None:
+    def track_expr_stmt(self, node: ast.Expr, pass_no: int = 0) -> None:
         """Track standalone expressions such as random.shuffle(tools) or list.append()."""
         if isinstance(node.value, ast.Call):
             if (self._is_shuffle_call(node.value)
                     and node.value.args and isinstance(node.value.args[0], ast.Name)):
-                self.mark_tools_mutated(node.value.args[0].id, node.value.args[0])
+                target = node.value.args[0]
+                self.mark_tools_mutated(target.id, target)
+                # shuffle() reorders in place, so the name it touches stops
+                # having a stable value. Marks like this one run on every
+                # pass: a later pass rebinds the name with a plain Assign
+                # and would otherwise leave it untainted.
+                self._taint_shuffled(target.id, target)
+            if pass_no:
+                # Everything below mutates state in place and is not
+                # idempotent, so it runs on the first pass only.
+                return
             if isinstance(node.value.func, ast.Attribute):
                 attr = node.value.func.attr
                 caller = node.value.func.value
@@ -908,6 +1036,16 @@ class TaintTracker:
                             lst.elts.extend(arg.elts)
                         if isinstance(arg, ast.Name) and self.is_set_variable(arg.id, arg):
                             self.mark_tools_mutated(caller.id, caller)
+
+    def _taint_shuffled(self, name: str, node: ast.AST) -> None:
+        """Record that ``name`` now holds a non-deterministic value."""
+        key = (self.scope_of(node), name)
+        origin = TaintOrigin(
+            variable_name=name, source_call="random.shuffle",
+            lineno=getattr(node, "lineno", 0),
+        )
+        self._b.tainted[key] = origin
+        self._b.prefix_tainted[key] = origin
 
     def _mutation_is_non_deterministic(self, node: ast.AST) -> bool:
         """Whether appending here can change the result between runs.
@@ -1023,7 +1161,9 @@ class TaintTracker:
 
     def _is_shuffle_call(self, node: ast.Call) -> bool:
         dotted = _extract_dotted_name(node.func)
-        return dotted in ("random.shuffle", "shuffle")
+        if not dotted:
+            return False
+        return self._resolve_parts(dotted.split(".")) == "random.shuffle"
 
     def _is_file_read(self, node: ast.Call) -> bool:
         return isinstance(node.func, ast.Attribute) and node.func.attr in ("read", "read_text")

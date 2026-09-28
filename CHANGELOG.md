@@ -17,6 +17,21 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Taint sources are now resolved through the file's own imports, so
+  `from datetime import datetime as dt; dt.now()`, `import random as rnd;
+  rnd.choice(x)` and `from uuid import uuid4 as u; u()` are all recognised.
+  Newly registered sources: `uuid.uuid6`, `uuid.uuid7`, `random.uniform`,
+  `random.getrandbits`, `datetime.today`, `time.strftime`,
+  `time.ctime`, `time.localtime`, `time.gmtime`, `django.utils.timezone.now`
+  and `pd.Timestamp.now` (`time.strftime`/`ctime`/`localtime`/`gmtime` are
+  only flagged when no time argument is passed -- given one, they are pure
+  functions of it). `hash()` of a `str`/`bytes` is a source too, since
+  `PYTHONHASHSEED` salts it exactly as it salts set iteration.
+- Two names that only resembled taint sources are no longer matched:
+  `event.time()` read as `time.time`, and an unimported bare `choice(...)`
+  read as `random.choice`.
+- `random.shuffle(x)` now taints `x` itself, not just the tools list it is
+  usually called on.
 - `instructions=` on an OpenAI Responses API call is now judged as a system
   prompt. It is the Responses spelling of `system=` and was skipped entirely,
   so a tainted prefix passed that way produced no finding.

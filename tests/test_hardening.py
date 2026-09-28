@@ -880,3 +880,92 @@ def test_plain_python_calls_are_not_llm_sinks(call: str) -> None:
     """A local object with a coincidental name must not be judged as a sink."""
     source = "from datetime import datetime\n" + call + _TINTED_SYSTEM
     assert _codes(source) == [], f"{call} was wrongly treated as an LLM sink"
+
+
+# --- P1-5: taint sources, resolved through the file's own imports ---------
+
+def _prefix_codes(header: str, value_expr: str) -> list:
+    """Rule ids when ``value_expr`` is bound to ``v`` at the head of a system."""
+    source = (
+        header + "\n"
+        "v = " + value_expr + "\n"
+        'client.messages.create(model="m", '
+        'system=f"{v}" + "STATIC RULES " * 30)\n'
+    )
+    return _codes(source)
+
+
+@pytest.mark.parametrize("header,call", [
+    ("from datetime import datetime as dt", "dt.now()"),
+    ("import random as rnd", "rnd.choice(['a', 'b'])"),
+    ("from uuid import uuid4 as u", "u()"),
+    ("from random import choice", "choice(['a', 'b'])"),
+    ("from uuid import uuid4", "uuid4()"),
+])
+def test_taint_source_resolved_through_an_import_alias(header, call) -> None:
+    """The local spelling has to be expanded back to the module it came from."""
+    assert "PCL001" in _prefix_codes(header, call), f"{header}: {call}"
+
+
+@pytest.mark.parametrize("header,call", [
+    ("import uuid", "uuid.uuid6()"),
+    ("import uuid", "uuid.uuid7()"),
+    ("import random", "random.uniform(0.0, 1.0)"),
+    ("import random", "random.getrandbits(8)"),
+    ("from datetime import datetime", "datetime.today()"),
+    ("from datetime import datetime", "datetime.now(tz=None)"),
+    ("import time", "time.strftime('%Y-%m-%d')"),
+    ("import time", "time.ctime()"),
+    ("import time", "time.localtime()"),
+    ("import time", "time.gmtime()"),
+    ("from django.utils import timezone", "timezone.now()"),
+    ("import django.utils.timezone", "django.utils.timezone.now()"),
+    ("import pandas as pd", "pd.Timestamp.now()"),
+])
+def test_previously_undetected_taint_source(header, call) -> None:
+    assert "PCL001" in _prefix_codes(header, call), f"{header}: {call}"
+
+
+@pytest.mark.parametrize("header,call", [
+    # An explicit point in time makes these pure functions of their argument.
+    ("import time", "time.strftime('%Y', (2024, 1, 1, 0, 0, 0, 0, 1, 0))"),
+    ("import time", "time.ctime(0)"),
+    ("import time", "time.localtime(0)"),
+    ("import time", "time.gmtime(0)"),
+    # hash() of a number is stable; only str/bytes are salted by
+    # PYTHONHASHSEED.
+    ("", "hash(42)"),
+    ("n = 5", "hash(n)"),
+])
+def test_deterministic_calls_are_not_taint_sources(header, call) -> None:
+    assert "PCL001" not in _prefix_codes(header, call), f"{header}: {call}"
+
+
+@pytest.mark.parametrize("header,call", [
+    ("name = 'alice'", "hash(name)"),
+    ("", "hash('literal')"),
+    ("msg = 'hi'", 'hash(f"{msg}")'),
+])
+def test_hash_of_a_string_is_a_taint_source(header, call) -> None:
+    assert "PCL001" in _prefix_codes(header, call), f"{header}: {call}"
+
+
+@pytest.mark.parametrize("header,call", [
+    ("", "event.time()"),
+    ("", "choice(options)"),
+])
+def test_names_that_only_look_like_taint_sources(header, call) -> None:
+    """Neither `event.time` nor an unimported `choice` is a stdlib source."""
+    assert _prefix_codes(header, call) == [], f"{header}: {call}"
+
+
+def test_random_shuffle_taints_its_argument() -> None:
+    """shuffle() reorders in place, so the argument stops being stable."""
+    source = (
+        "import random\n"
+        "items = ['a', 'b']\n"
+        "random.shuffle(items)\n"
+        'client.messages.create(model="m", '
+        'system=", ".join(items) + "STATIC RULES " * 30)\n'
+    )
+    assert "PCL001" in _codes(source)
