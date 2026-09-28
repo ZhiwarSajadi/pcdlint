@@ -3,6 +3,8 @@
 import json
 import sys
 
+import pytest
+
 from pcdlint.cli import main
 
 # Fires PCL001 (ERROR), PCL002 (WARNING) and PCL003 (ERROR).
@@ -144,3 +146,51 @@ def test_select_accepts_repeated_flag(capsys, tmp_path) -> None:
         "PCL001",
         "PCL003",
     }
+
+
+# --- an empty allowlist is an error, not a clean run ---------------------
+
+def _exit_code(tmp_path, capsys, *args: str) -> tuple[int, str]:
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint", "check", str(tmp_path), *args]
+        code = main()
+    finally:
+        sys.argv = old_argv
+    return code, capsys.readouterr().err
+
+
+def test_empty_select_in_config_exits_2(tmp_path, capsys) -> None:
+    """select = [] switches every rule off, which reads as a clean run."""
+    _write_project(tmp_path, '[tool.pcdlint]\nselect = []\n')
+
+    code, err = _exit_code(tmp_path, capsys)
+
+    assert code == 2, err
+    assert "select" in err
+
+
+def test_empty_ignore_in_config_is_allowed(capsys, tmp_path) -> None:
+    """ignore = [] means "ignore nothing"; every rule must still run."""
+    _write_project(tmp_path, '[tool.pcdlint]\nignore = []\n')
+    assert _rule_ids(capsys, tmp_path) == {"PCL001", "PCL002", "PCL003"}
+
+
+@pytest.mark.parametrize("flag_value", [",", "", " , , "])
+def test_empty_cli_select_exits_2(tmp_path, capsys, flag_value: str) -> None:
+    """--select "," is an empty allowlist, not "run everything"."""
+    _write_project(tmp_path, None)
+
+    code, err = _exit_code(tmp_path, capsys, "--select", flag_value)
+
+    assert code == 2, err
+    assert "--select" in err
+
+
+def test_empty_cli_ignore_is_allowed(tmp_path, capsys) -> None:
+    """--ignore "," selects nothing to ignore; the run must stay clean of errors."""
+    _write_project(tmp_path, None)
+
+    code, _err = _exit_code(tmp_path, capsys, "--ignore", ",")
+
+    assert code == 1, "no rules should have been switched off"

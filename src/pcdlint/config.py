@@ -46,12 +46,20 @@ def selected(rule_id: str, select: frozenset | None, ignore: frozenset) -> bool:
     return rule_id not in ignore
 
 
-def _rule_ids(value: object, key: str, path: Path) -> frozenset:
+def _rule_ids(value: object, key: str, path: Path, *,
+              allow_empty: bool = False) -> frozenset:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ConfigError(
             f"{_SECTION} {key} in {path} must be a list of rule ids, got {value!r}"
         )
     ids = frozenset(v.strip().upper() for v in value)
+    # An empty allowlist switches every rule off, which looks exactly like a
+    # clean run. That is the failure exit 2 exists to prevent, so a select
+    # naming nothing is an error; an empty ignore just means "ignore nothing".
+    if not ids and not allow_empty:
+        raise ConfigError(
+            f"{_SECTION} {key} in {path} must name at least one rule"
+        )
     unknown = sorted(ids - KNOWN_RULE_IDS)
     if unknown:
         raise ConfigError(
@@ -89,7 +97,8 @@ def _load(path: Path) -> tuple[Config | None, bool]:
         )
 
     select = _rule_ids(section["select"], "select", path) if "select" in section else None
-    ignore = _rule_ids(section["ignore"], "ignore", path) if "ignore" in section else frozenset()
+    ignore = (_rule_ids(section["ignore"], "ignore", path, allow_empty=True)
+              if "ignore" in section else frozenset())
     return Config(select=select, ignore=ignore), True
 
 
@@ -112,11 +121,16 @@ def load_for(file_path: str) -> Config:
     return DEFAULT
 
 
-def parse_rule_list(values: list[str] | None, flag: str) -> frozenset:
+def parse_rule_list(values: list[str] | None, flag: str, *,
+                    allow_empty: bool = False) -> frozenset:
     """Turn repeated ``--select/--ignore`` arguments into a validated set."""
     ids: set[str] = set()
     for value in values or []:
         ids.update(part.strip().upper() for part in value.split(",") if part.strip())
+    # ``--select ","`` and ``--select ""`` are an empty allowlist, which would
+    # run no rules at all and report a clean run. Same reasoning as _rule_ids.
+    if not ids and not allow_empty:
+        raise ConfigError(f"{flag} must name at least one rule")
     unknown = sorted(ids - KNOWN_RULE_IDS)
     if unknown:
         raise ConfigError(

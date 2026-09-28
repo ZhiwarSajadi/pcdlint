@@ -8,6 +8,10 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- An empty `select` -- `[tool.pcdlint] select = []`, `--select ","` or
+  `--select ""` -- is now an error (exit 2). It used to switch every rule
+  off and report a clean run. An empty `ignore` is still accepted, since it
+  only means "ignore nothing".
 - `--fix` combined with `--diff` now re-applies the diff filter after the
   post-rewrite re-analysis, so the report and the exit code cover only the
   lines the change introduced rather than every finding in the touched files.

@@ -227,7 +227,10 @@ def main() -> int:
 
     try:
         select = config.parse_rule_list(args.select, "--select") if args.select else None
-        ignore = config.parse_rule_list(args.ignore, "--ignore") if args.ignore else None
+        # An empty --ignore means "ignore nothing", which is not a clean run
+        # hiding behind a typo: it leaves every rule on.
+        ignore = (config.parse_rule_list(args.ignore, "--ignore", allow_empty=True)
+                  if args.ignore else None)
     except config.ConfigError as exc:
         print(f"pcdlint: error: {exc}", file=sys.stderr)
         return 2
