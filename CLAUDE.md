@@ -44,8 +44,15 @@ pcdlint check <file_or_directory>
 # or via module:
 python -m pcdlint.cli check <file_or_directory>
 
-# Output diagnostics as JSON
+# Output diagnostics as JSON, or SARIF 2.1.0 for GitHub Code Scanning
 pcdlint check src/ --format json
+pcdlint check src/ --format sarif > pcdlint.sarif
+
+# Apply mechanical fixes in place (PCL002 sort_keys, PCL003 sorted)
+pcdlint check src/ --fix
+
+# Only report findings on lines changed vs a git ref (default: HEAD)
+pcdlint check src/ --diff origin/main
 
 # Verify against test demo files
 pcdlint check demo_good.py    # Clean case (0 issues)
@@ -67,7 +74,8 @@ pcdlint.analyzer.analyze_path(_ex) / analyze_code(_ex)
         ├─► AST Parsing (ast.parse) — a SyntaxError is reported, never swallowed
         │
         ├─► pcdlint.taint.TaintTracker
-        │     - Detects non-deterministic sources (datetime, uuid, random, secrets, os.urandom)
+        │     - Detects non-deterministic sources (datetime, time, uuid, random,
+        │       secrets, os.urandom, os.getpid — see TAINT_SOURCES)
         │     - Assigns every node a lexical scope; bindings are keyed (scope, name) and
         │       strong-updated on reassignment, so one function's `system` never bleeds
         │       into another's
@@ -76,10 +84,16 @@ pcdlint.analyzer.analyze_path(_ex) / analyze_code(_ex)
         │     - Identifies static prefix solids (string constants, repeated strings
         │       such as "rules " * 30, uppercase vars) at >= 200 chars
         │     - Tracks sets, conditional (branch) construction, and tool list mutations
+        │     - Walks each if/try/loop arm from a shared snapshot and may-merges them:
+        │       taint unions, static text must agree, and the conditional flag only
+        │       survives when the arms provably bind a name differently
+        │     - Resolves function summaries (taint origin, is_set, unsorted-json ids)
+        │       to a fixpoint, so declaration order does not limit call depth
         │
         ├─► pcdlint.rules.RuleEngine.run(tree, file_path)
         │     - Pre-scans for variables that reach an LLM sink call
         │     - Evaluates AST nodes against 4 lint rules (source-order walk)
+        │     - PCL002/PCL003 attach TextEdit spans for --fix; the other two cannot
         │
         ├─► pcdlint.disables.parse(source_code) + pcdlint.config.load_for(file_path)
         │     - Single suppression point: rules never see comments or config
@@ -92,24 +106,31 @@ pcdlint.analyzer.analyze_path(_ex) / analyze_code(_ex)
 Deduplicated Diagnostics (sorted by file, lineno, col_offset)
         │
         ▼
-pcdlint.cli (Rich text or JSON on stdout, errors on stderr)
+pcdlint.cli
+        - --diff filters to lines git reports as changed (a failed diff exits 2,
+          it never reports a false clean run)
+        - --fix splices the attached edits via pcdlint.fixer, refuses any rewrite
+          that no longer parses, re-analyzes, and reports findings it skipped
+        - text / json / sarif 2.1.0 on stdout, errors and fix summary on stderr
         exit 0 = clean, 1 = findings (ERROR, or WARNING with --fail-on-warn),
-        2 = a path could not be analyzed
+        2 = a path could not be analyzed, or --diff could not run
 ```
 
-Tests live in `tests/test_pcdlint.py` (rules/CLI), `tests/test_pclint.py` (alias package)
-and `tests/test_hardening.py` (regression + robustness cases).
+Tests live in `tests/test_pcdlint.py` (rules/CLI), `tests/test_pclint.py` (alias package),
+`tests/test_hardening.py` (regression + robustness cases), `tests/test_fix.py` (autofix
+spans and application), `tests/test_output.py` (SARIF and `--diff`) and
+`tests/test_main.py` (the `python -m pcdlint` entry point).
 
 ### Rule System
 
-| Rule ID | Rule Name | Severity | Detection Target |
-|---------|-----------|----------|------------------|
-| `PCL001` | `prefix-taint-injection` | ERROR | Dynamic value placed before static prompt text in LLM `system` param or `messages`/`input` prefix (supports Anthropic content blocks, `cache_control` breakpoints, and positional args) |
-| `PCL002` | `unsorted-json-in-prefix` | WARNING | `json.dumps()` without `sort_keys=True` whose result reaches a prompt or LLM call (tracked through intermediate variables) |
-| `PCL003` | `set-iteration-in-prompt` | ERROR | Unsorted sets in `.join()`, `str()`, or f-string interpolations |
-| `PCL004` | `dynamic-tools-mutation` | WARNING | `tools` parameter altered conditionally in if/else, shuffled, built from an unordered set, or assembled from a branch-assigned helper |
+| Rule ID | Rule Name | Severity | `--fix` | Detection Target |
+|---------|-----------|----------|---------|------------------|
+| `PCL001` | `prefix-taint-injection` | ERROR | — | Dynamic value placed before static prompt text in LLM `system` param or `messages`/`input` prefix (supports Anthropic content blocks, `cache_control` breakpoints, and positional args) |
+| `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True` whose result reaches a prompt or LLM call (tracked through intermediate variables) |
+| `PCL003` | `set-iteration-in-prompt` | ERROR | ✅ | Unsorted sets in `.join()`, `str()`, or f-string interpolations |
+| `PCL004` | `dynamic-tools-mutation` | WARNING | — | `tools` parameter altered conditionally in if/else, shuffled, built from an unordered set, or assembled from a branch-assigned helper |
 
 ### Package Structure & Aliases
-- `src/pcdlint/`: Primary implementation containing `analyzer.py`, `taint.py`, `rules.py`, `models.py`, `cli.py`, plus `disables.py` (parses `# pcdlint: disable` comments with `tokenize`) and `config.py` (reads `[tool.pcdlint]` from the nearest `pyproject.toml` above each file, via `tomllib`/`tomli`).
+- `src/pcdlint/`: Primary implementation containing `analyzer.py`, `taint.py`, `rules.py`, `models.py`, `cli.py`, `fixer.py` (applies the `TextEdit` spans a rule attached — byte-precise splicing, overlap dropping), plus `disables.py` (parses `# pcdlint: disable` comments with `tokenize`) and `config.py` (reads `[tool.pcdlint]` from the nearest `pyproject.toml` above each file, via `tomllib`/`tomli`).
 - `src/pclint/`: Backward-compatible alias package that re-exports all models, tracker, engine, and CLI functions from `pcdlint`.
 - Both `pcdlint` and `pclint` commands map to `pcdlint.cli:main` in `pyproject.toml`.

@@ -56,12 +56,15 @@ client.chat.completions.create(
 
 ## Rule Reference
 
-| Rule ID | Name | Severity | Description |
-|---------|------|----------|-------------|
-| `PCL001` | `prefix-taint-injection` | ERROR | Dynamic value placed before static prompt text invalidates cache prefix |
-| `PCL002` | `unsorted-json-in-prefix` | WARNING | `json.dumps()` without `sort_keys=True` produces non-deterministic output |
-| `PCL003` | `set-iteration-in-prompt` | ERROR | Python's `PYTHONHASHSEED` randomizes set iteration order across processes |
-| `PCL004` | `dynamic-tools-mutation` | WARNING | Changing tool definition order invalidates the entire prompt cache hierarchy |
+| Rule ID | Name | Severity | `--fix` | Description |
+|---------|------|----------|---------|-------------|
+| `PCL001` | `prefix-taint-injection` | ERROR | — | Dynamic value placed before static prompt text invalidates cache prefix |
+| `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True` produces non-deterministic output |
+| `PCL003` | `set-iteration-in-prompt` | ERROR | ✅ | Python's `PYTHONHASHSEED` randomizes set iteration order across processes |
+| `PCL004` | `dynamic-tools-mutation` | WARNING | — | Changing tool definition order invalidates the entire prompt cache hierarchy |
+
+`PCL001` and `PCL004` have no mechanical fix: only you know where the dynamic
+value belongs, or what the tool order should be.
 
 ---
 
@@ -89,6 +92,15 @@ pcdlint check src/ tests/
 # Output as JSON
 pcdlint check src/ --format json
 
+# Output SARIF 2.1.0 for GitHub Code Scanning
+pcdlint check src/ --format sarif > pcdlint.sarif
+
+# Apply the mechanical fixes (PCL002 sort_keys, PCL003 sorted) in place
+pcdlint check src/ --fix
+
+# Only report findings on lines this branch changed (default ref: HEAD)
+pcdlint check src/ --diff origin/main
+
 # Fail on warnings (useful for CI)
 pcdlint check src/ --fail-on-warn
 
@@ -101,16 +113,28 @@ python -m pcdlint check src/
 python -m pclint check src/
 ```
 
+`--fix` rewrites only what it can rewrite safely, re-reads the files so the
+report and the exit code describe what is on disk now, and tells you how many
+findings it had to leave to you. A rewrite that would no longer parse is
+reported and skipped rather than written.
+
+`--diff` needs `git`. It compares the working tree against `REF` and keeps a
+finding only when **the line the finding points at** changed — a finding on an
+untouched line stays hidden even if the value it refers to was edited. Pair it
+with `--fix` to repair only what a PR introduced.
+
 ### Exit codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | No findings |
 | `1` | Findings at ERROR severity, or any WARNING when `--fail-on-warn` is set |
-| `2` | A path could not be analyzed: missing, not a `.py` file, not valid UTF-8, or a syntax error |
+| `2` | A path could not be analyzed: missing, not a `.py` file, not valid UTF-8, a syntax error, or `--diff` could not run (no git, not a repository, unknown ref) |
 
 Exit code `2` exists so a typo'd path or a broken file can never look like a clean run
 in CI. Errors are printed to stderr; `--format json` output on stdout stays valid JSON.
+A failed `--diff` also exits `2`: reporting "no findings" because git was
+unavailable would be the linter lying about your code.
 
 ## Configuration
 
@@ -165,6 +189,9 @@ on: [push, pull_request]
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # required to upload SARIF
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -172,6 +199,21 @@ jobs:
           python-version: "3.12"
       - run: pip install pcdlint
       - run: pcdlint check src/ --fail-on-warn
+      # Findings appear directly on the PR diff via Code Scanning.
+      - run: pcdlint check src/ --format sarif > pcdlint.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pcdlint.sarif
+```
+
+Code Scanning has to be enabled for the repository (free for public repos).
+Add `continue-on-error: true` to the upload step if some of your repositories
+do not have it enabled.
+
+To lint only the lines a pull request changed, swap the last check for:
+
+```yaml
+      - run: pcdlint check src/ --diff "origin/${{ github.base_ref }}" --fail-on-warn
 ```
 
 ---
