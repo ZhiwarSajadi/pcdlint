@@ -8,6 +8,12 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- PCL002 no longer offers an autofix for a `json.dumps()` that unpacks
+  `**kwargs`. Appending `, sort_keys=True` to `json.dumps(x, **opts)`
+  parses cleanly -- so the post-fix `ast.parse` guard could not see it --
+  and raises `TypeError: got multiple values for keyword argument` whenever
+  `opts` already defines `sort_keys`. The finding is still reported; the
+  rewrite is withheld.
 - An empty `select` -- `[tool.pcdlint] select = []`, `--select ","` or
   `--select ""` -- is now an error (exit 2). It used to switch every rule
   off and report a clean run. An empty `ignore` is still accepted, since it

@@ -66,6 +66,39 @@ def test_pcl002_edit_replaces_existing_false_value() -> None:
     assert line[edit.start_col:edit.end_col] == b"False"
 
 
+def test_pcl002_declines_a_call_that_unpacks_kwargs() -> None:
+    """**opts may already carry sort_keys, so appending one is unsafe.
+
+    ``json.dumps(payload, **opts, sort_keys=True)`` parses fine -- the
+    post-fix ast.parse guard cannot see it -- and raises
+    ``TypeError: got multiple values for keyword argument 'sort_keys'``
+    whenever opts happens to define that key. The finding stands; the
+    rewrite does not.
+    """
+    source = _pcl002_source("json.dumps(payload, **opts)")
+    found = [d for d in analyze_code(source) if d.rule_id == "PCL002"]
+    assert len(found) == 1, (
+        f"expected one PCL002, got {[d.rule_id for d in analyze_code(source)]}"
+    )
+    assert found[0].edits == (), "a **kwargs splat must not be rewritten"
+
+
+def test_cli_fix_leaves_a_kwargs_unpacking_call_byte_identical(
+        tmp_path, monkeypatch) -> None:
+    """--fix must report the finding and write nothing back."""
+    source = _pcl002_source("json.dumps(payload, **opts)")
+    target = tmp_path / "sample.py"
+    # Bytes, so the comparison is about the fix and not about whether
+    # write_text translated \n to \r\n on this platform.
+    target.write_bytes(source.encode("utf-8"))
+    monkeypatch.chdir(tmp_path)
+
+    (code,) = _run_cli(["check", "sample.py", "--fix", "--fail-on-warn"])
+
+    assert target.read_bytes() == source.encode("utf-8")
+    assert code == 1, "the PCL002 warning must still be reported"
+
+
 # --- PCL003: wrap the set in sorted(...) --------------------------------
 
 def _pcl003_edits(expression: str, argument: bytes) -> list:

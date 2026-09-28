@@ -324,6 +324,13 @@ class RuleEngine:
     @staticmethod
     def _pcl002_edits(node: ast.Call) -> tuple:
         """A rewrite that adds sort_keys=True without ever duplicating it."""
+        if any(kw.arg is None for kw in node.keywords):
+            # A **kwargs splat may already carry sort_keys. Appending a second
+            # one still parses -- so the post-fix ast.parse guard misses it --
+            # and raises TypeError: got multiple values for keyword argument
+            # as soon as opts happens to define that key. Report the finding,
+            # decline the rewrite; only a human knows what is in opts.
+            return ()
         sort_kw = next((kw for kw in node.keywords if kw.arg == "sort_keys"), None)
         if sort_kw is not None and sort_kw.value is not None:
             edit = _replace(sort_kw.value, "True")
