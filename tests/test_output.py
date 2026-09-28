@@ -1,0 +1,203 @@
+"""Machine-readable output formats: SARIF for GitHub Code Scanning."""
+
+import json
+import sys
+
+import pytest
+
+from pcdlint.cli import main
+
+# PCL001 (ERROR) and PCL002 (WARNING) both fire on this file.
+SAMPLE = (
+    "import json\n"
+    "from datetime import datetime\n"
+    "system = f'{datetime.now()} ' + 'STATIC RULES ' * 30\n"
+    "prompt = json.dumps(payload)\n"
+    "client.messages.create(model='m', system=system, "
+    "messages=[{'role': 'user', 'content': prompt}])\n"
+)
+
+
+def _run_cli(argv: list, capsys: pytest.CaptureFixture) -> tuple:
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint", *argv]
+        code = main()
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+    finally:
+        sys.argv = old_argv
+
+
+def _sarif(capsys: pytest.CaptureFixture, argv: list) -> dict:
+    code, out, _err = _run_cli(argv, capsys)
+    assert code in (0, 1), f"unexpected exit {code}"
+    return json.loads(out)
+
+
+def _write(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text(SAMPLE, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_sarif_has_the_required_envelope(tmp_path, monkeypatch, capsys) -> None:
+    _write(tmp_path, monkeypatch)
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+    assert data["version"] == "2.1.0"
+    assert data["$schema"].endswith("sarif-2.1.0.json")
+    driver = data["runs"][0]["tool"]["driver"]
+    assert driver["name"] == "pcdlint"
+    assert "version" in driver
+    assert "informationUri" in driver
+
+
+def test_sarif_lists_every_known_rule(tmp_path, monkeypatch, capsys) -> None:
+    _write(tmp_path, monkeypatch)
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+    rules = data["runs"][0]["tool"]["driver"]["rules"]
+    assert {r["id"] for r in rules} == {"PCL001", "PCL002", "PCL003", "PCL004"}
+    for rule in rules:
+        assert rule["shortDescription"]["text"]
+        assert rule["helpUri"]
+
+
+def test_sarif_maps_severity_to_level(tmp_path, monkeypatch, capsys) -> None:
+    _write(tmp_path, monkeypatch)
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+    levels = {r["level"] for r in data["runs"][0]["results"]}
+    assert levels == {"error", "warning"}, levels
+
+
+def test_sarif_reports_position_and_message(tmp_path, monkeypatch, capsys) -> None:
+    _write(tmp_path, monkeypatch)
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+    results = data["runs"][0]["results"]
+    assert results
+    for result in results:
+        assert result["ruleId"].startswith("PCL")
+        assert result["message"]["text"]
+        region = result["locations"][0]["physicalLocation"]["region"]
+        assert isinstance(region["startLine"], int) and region["startLine"] >= 1
+        assert isinstance(region["startColumn"], int) and region["startColumn"] >= 1
+
+
+def test_sarif_paths_are_posix_relative_uris(tmp_path, monkeypatch, capsys) -> None:
+    nested = tmp_path / "pkg"
+    nested.mkdir()
+    (nested / "mod.py").write_text(SAMPLE, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    data = _sarif(capsys, ["check", "pkg", "--format", "sarif"])
+
+    results = data["runs"][0]["results"]
+    assert results, "expected findings inside the nested module"
+    for result in results:
+        uri = result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        assert "\\" not in uri, uri
+        assert uri == "pkg/mod.py", uri
+
+
+def test_sarif_exit_code_matches_json(tmp_path, monkeypatch, capsys) -> None:
+    _write(tmp_path, monkeypatch)
+    sarif_code, _out, _err = _run_cli(
+        ["check", "sample.py", "--format", "sarif"], capsys)
+    json_code, _out, _err = _run_cli(
+        ["check", "sample.py", "--format", "json"], capsys)
+    assert sarif_code == json_code == 1
+
+
+# --- --diff: only report what changed -----------------------------------
+
+# A finding is reported when the line it points at changed, so the taint and
+# the call that consumes it are deliberately on one line here: PCL001 reports
+# the position where the dynamic value reaches the prompt.
+CLEAN = (
+    "import json\n"
+    "from datetime import datetime\n"
+    "client.messages.create(model='m', system='STATIC RULES ' * 30, messages=[])\n"
+)
+
+BUGGY = (
+    "import json\n"
+    "from datetime import datetime\n"
+    "client.messages.create(model='m', "
+    "system=f'{datetime.now()} ' + 'STATIC RULES ' * 30, messages=[])\n"
+)
+
+
+def _git(args: list, cwd) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                   text=True, check=True)
+
+
+def _repo(tmp_path, monkeypatch, initial: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    _git(["init", "-q"], tmp_path)
+    _git(["config", "user.email", "test@example.com"], tmp_path)
+    _git(["config", "user.name", "Test"], tmp_path)
+    (tmp_path / "sample.py").write_text(initial, encoding="utf-8")
+    _git(["add", "."], tmp_path)
+    _git(["commit", "-q", "-m", "base"], tmp_path)
+
+
+def test_diff_reports_findings_on_newly_changed_lines(tmp_path, monkeypatch,
+                                                      capsys) -> None:
+    _repo(tmp_path, monkeypatch, CLEAN)
+    # Line 3 changes and becomes the line the finding sits on.
+    (tmp_path / "sample.py").write_text(BUGGY, encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", "sample.py", "--diff"], capsys)
+
+    assert code == 1, out
+    assert "PCL001" in out
+    assert ":3:" in out, out
+
+
+def test_diff_hides_findings_on_untouched_lines(tmp_path, monkeypatch,
+                                                capsys) -> None:
+    _repo(tmp_path, monkeypatch, BUGGY)
+    # Only line 1 changes; the PCL001 finding lives on line 3.
+    (tmp_path / "sample.py").write_text(
+        BUGGY.replace("import json\n", "import json  # touched\n"),
+        encoding="utf-8")
+
+    code, out, _err = _run_cli(["check", "sample.py", "--diff"], capsys)
+
+    assert code == 0, out
+    assert "PCL001" not in out
+
+
+def test_diff_with_clean_tree_reports_nothing(tmp_path, monkeypatch,
+                                              capsys) -> None:
+    _repo(tmp_path, monkeypatch, BUGGY)
+
+    code, out, _err = _run_cli(["check", "sample.py", "--diff"], capsys)
+
+    assert code == 0, out
+    assert "PCL001" not in out
+
+
+def test_diff_with_unknown_ref_exits_2(tmp_path, monkeypatch, capsys) -> None:
+    _repo(tmp_path, monkeypatch, BUGGY)
+
+    code, _out, err = _run_cli(
+        ["check", "sample.py", "--diff", "no-such-ref"], capsys)
+
+    assert code == 2
+    assert "git" in err.lower()
+
+
+def test_diff_accepts_an_explicit_ref(tmp_path, monkeypatch, capsys) -> None:
+    _repo(tmp_path, monkeypatch, CLEAN)
+    (tmp_path / "sample.py").write_text(BUGGY, encoding="utf-8")
+    _git(["add", "."], tmp_path)
+    _git(["commit", "-q", "-m", "buggy"], tmp_path)
+
+    # Diff the first commit against the working tree, not the default HEAD.
+    code, out, _err = _run_cli(["check", "sample.py", "--diff", "HEAD~1"], capsys)
+
+    assert code == 1, out
+    assert "PCL001" in out

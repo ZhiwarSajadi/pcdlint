@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ from rich.table import Table
 from pcdlint import __version__, config
 from pcdlint.analyzer import analyze_path_ex
 from pcdlint.fixer import apply_edits
+from pcdlint.rules import KNOWN_RULE_IDS, RULE_SHORT_DESCRIPTIONS
+
+# Shown as the tool's informationUri and every rule's helpUri in SARIF.
+_REPO_URL = "https://github.com/ZhiwarSajadi/pcdlint"
 
 
 def _analyze_paths(paths: list, select: frozenset | None,
@@ -70,6 +75,73 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
     return changed, skipped, errors
 
 
+def _git_output(args: list) -> tuple[str, str]:
+    """Run git; returns ``(stdout, error)``, with ``error`` empty on success."""
+    try:
+        result = subprocess.run(["git", *args], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace",
+                                check=False)
+    except OSError as exc:
+        return "", str(exc)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        return "", detail or f"exit status {result.returncode}"
+    return result.stdout, ""
+
+
+def _absolute(path_text: str, root: Path) -> str:
+    """Resolve ``path_text`` against ``root`` as an absolute POSIX path."""
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve().as_posix()
+
+
+def _parse_added_lines(patch: str, root: Path) -> dict[str, set[int]]:
+    """Absolute POSIX path -> the line numbers each ``@@`` hunk adds."""
+    changed: dict[str, set[int]] = {}
+    current: str | None = None
+    for line in patch.splitlines():
+        if line.startswith("+++ "):
+            target = line[4:].strip()
+            current = None if target == "/dev/null" else _absolute(target, root)
+        elif line.startswith("@@") and current is not None:
+            fields = line.split()
+            if len(fields) < 3 or not fields[2].startswith("+"):
+                continue
+            start_text, _, count_text = fields[2][1:].partition(",")
+            try:
+                start = int(start_text)
+                count = int(count_text) if count_text else 1
+            except ValueError:
+                continue
+            if count > 0:
+                changed.setdefault(current, set()).update(
+                    range(start, start + count))
+    return changed
+
+
+def _filter_to_changed(diagnostics: list, ref: str) -> tuple[list, list[str]]:
+    """Keep only findings on lines the working tree changed since ``ref``.
+
+    A failure to diff is an error, not "no findings": reporting a clean run
+    because git was unavailable would be the linter lying about the code.
+    """
+    top, top_error = _git_output(["rev-parse", "--show-toplevel"])
+    if top_error:
+        return [], [f"--diff requires git: {top_error}"]
+    patch, diff_error = _git_output(
+        ["diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-prefix", ref])
+    if diff_error:
+        return [], [f"git diff against {ref!r} failed: {diff_error}"]
+
+    changed = _parse_added_lines(patch, Path(top.strip()))
+    return [
+        d for d in diagnostics
+        if d.lineno in changed.get(_absolute(d.file_path, Path.cwd()), ())
+    ], []
+
+
 def main() -> int:
     # Ensure UTF-8 output encoding across platforms (prevent Windows charmap/cp1252
     # errors). sys.stdout is typed TextIO but may be a wrapper object at runtime, so
@@ -94,8 +166,9 @@ def main() -> int:
     )
     parser.add_argument("paths", nargs="*", help="File or directory paths to check")
     parser.add_argument(
-        "--format", choices=["text", "json"], default="text",
-        help="Output format (default: text)",
+        "--format", choices=["text", "json", "sarif"], default="text",
+        help="Output format: text, json, or sarif 2.1.0 for GitHub Code "
+             "Scanning (default: text)",
     )
     parser.add_argument(
         "--fail-on-warn", action="store_true",
@@ -115,6 +188,13 @@ def main() -> int:
         "--ignore", action="append", metavar="RULES", default=None,
         help="Comma-separated rule ids to skip (repeatable); overrides "
              "[tool.pcdlint] ignore",
+    )
+    parser.add_argument(
+        "--diff", nargs="?", const="HEAD", default=None, metavar="REF",
+        help="Only report findings whose own line the working tree changed "
+             "since REF in git (default: HEAD). A finding on an untouched "
+             "line stays hidden even when the value it points at changed.",
+
     )
     parser.add_argument(
         "--version", action="version", version=f"pcdlint {__version__}",
@@ -141,6 +221,12 @@ def main() -> int:
 
     all_diagnostics, all_errors = _analyze_paths(raw_paths, select, ignore)
 
+    if args.diff is not None:
+        # Before --fix: PR CI wants only the lines a change introduced fixed.
+        all_diagnostics, diff_errors = _filter_to_changed(all_diagnostics,
+                                                           args.diff)
+        all_errors.extend(diff_errors)
+
     if args.fix:
         changed, skipped, fix_errors = _apply_fixes(all_diagnostics)
         all_errors.extend(fix_errors)
@@ -160,6 +246,10 @@ def main() -> int:
 
     if args.format == "json":
         _print_json(all_diagnostics)
+    elif args.format == "sarif":
+        # Always emitted, even with no findings: an empty results array is
+        # valid SARIF and lets Code Scanning clear stale annotations.
+        _print_sarif(all_diagnostics)
     elif all_diagnostics or not all_errors:
         _print_text(all_diagnostics)
 
@@ -197,6 +287,70 @@ def _print_json(diagnostics: list) -> None:
             "severity": d.severity,
         })
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _sarif_uri(file_path: str) -> str:
+    """A POSIX path relative to the working directory, as Code Scanning wants."""
+    path = Path(file_path)
+    if path.is_absolute():
+        try:
+            path = path.relative_to(Path.cwd())
+        except ValueError:
+            pass
+    return path.as_posix()
+
+
+def _print_sarif(diagnostics: list) -> None:
+    import json
+
+    rules = [
+        {
+            "id": rule_id,
+            "shortDescription": {"text": RULE_SHORT_DESCRIPTIONS[rule_id]},
+            "helpUri": f"{_REPO_URL}#readme",
+        }
+        for rule_id in sorted(KNOWN_RULE_IDS)
+    ]
+    results = [
+        {
+            "ruleId": d.rule_id,
+            "level": "error" if d.severity == "ERROR" else "warning",
+            "message": {"text": d.message},
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": _sarif_uri(d.file_path)},
+                        # SARIF columns are 1-based; ast reports 0-based.
+                        "region": {
+                            "startLine": d.lineno,
+                            "startColumn": d.col_offset + 1,
+                        },
+                    }
+                }
+            ],
+        }
+        for d in diagnostics
+    ]
+    print(json.dumps(
+        {
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "pcdlint",
+                            "version": __version__,
+                            "informationUri": _REPO_URL,
+                            "rules": rules,
+                        }
+                    },
+                    "results": results,
+                }
+            ],
+        },
+        indent=2,
+    ))
 
 
 def _print_text(diagnostics: list) -> None:

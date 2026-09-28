@@ -9,6 +9,10 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lets upload-sarif publish findings onto the PR diff.
+      security-events: write
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -32,3 +36,16 @@ jobs:
       - name: Run tests
         run: |
           pytest --cov=pcdlint --cov-fail-under=90 --cov-report=term-missing
+      # One upload only: five identical reports would collide, and Code
+      # Scanning needs security-events: write. continue-on-error keeps repos
+      # without code scanning enabled green.
+      - name: Emit SARIF
+        if: matrix.python-version == '3.12'
+        continue-on-error: true
+        run: pcdlint check src/ tests/ --format sarif > pcdlint.sarif
+      - name: Upload SARIF to GitHub Code Scanning
+        if: matrix.python-version == '3.12'
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pcdlint.sarif

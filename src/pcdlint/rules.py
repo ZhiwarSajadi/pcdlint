@@ -13,6 +13,16 @@ PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "c
 # against it so a typo can never silently switch a rule off (or on).
 KNOWN_RULE_IDS: frozenset = frozenset({"PCL001", "PCL002", "PCL003", "PCL004"})
 
+# One-line catalog used by machine-readable output (SARIF). The full message
+# and fix text live on each Diagnostic; this is what a rule list shows before
+# any finding exists.
+RULE_SHORT_DESCRIPTIONS: dict[str, str] = {
+    "PCL001": "Dynamic value placed before static prompt text, invalidating the cached prefix",
+    "PCL002": "json.dumps() without sort_keys=True reaching a prompt",
+    "PCL003": "Unsorted set iterated while building prompt text",
+    "PCL004": "tools list assembled or mutated in a non-deterministic order",
+}
+
 
 def _end_pos(node: ast.AST) -> tuple[int, int] | None:
     """``(line, byte_col)`` just past ``node``, when ast recorded one."""
