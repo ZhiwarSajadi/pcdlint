@@ -1,7 +1,7 @@
 """The 4 core detection rules for pcdlint."""
 
 import ast
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 from pcdlint.models import Diagnostic, TaintOrigin
 from pcdlint.taint import TaintTracker
@@ -9,13 +9,17 @@ from pcdlint.taint import TaintTracker
 # Substrings that mark an assignment target as prompt/LLM-prefix material.
 PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "context")
 
+# Every rule this engine can emit. Selectors and disable comments are validated
+# against it so a typo can never silently switch a rule off (or on).
+KNOWN_RULE_IDS: frozenset = frozenset({"PCL001", "PCL002", "PCL003", "PCL004"})
+
 
 class RuleEngine:
     """Applies all 4 lint rules against analyzed code."""
 
     def __init__(self, tracker: TaintTracker) -> None:
         self.tracker = tracker
-        self._diagnostics: List[Diagnostic] = []
+        self._diagnostics: list[Diagnostic] = []
         self._file_path: str = ""
         self._llm_used_vars: set = set()
 
@@ -27,7 +31,7 @@ class RuleEngine:
                     if isinstance(child, ast.Name):
                         self._llm_used_vars.add(child.id)
 
-    def run(self, tree: ast.AST, file_path: str = "") -> List[Diagnostic]:
+    def run(self, tree: ast.AST, file_path: str = "") -> list[Diagnostic]:
         """Run every rule over ``tree`` and return its diagnostics."""
         self._file_path = file_path
         self._diagnostics = []
@@ -50,14 +54,14 @@ class RuleEngine:
         ))
 
     @staticmethod
-    def _line_of(*nodes: Optional[ast.AST]) -> int:
+    def _line_of(*nodes: ast.AST | None) -> int:
         for node in nodes:
             if node is not None and hasattr(node, "lineno"):
                 return node.lineno
         return 1
 
     @staticmethod
-    def _col_of(*nodes: Optional[ast.AST]) -> int:
+    def _col_of(*nodes: ast.AST | None) -> int:
         for node in nodes:
             if node is not None and hasattr(node, "col_offset"):
                 return node.col_offset
@@ -73,7 +77,7 @@ class RuleEngine:
         func = node.func
         if isinstance(func, ast.Attribute):
             parts = []
-            current = func
+            current: ast.expr = func
             while isinstance(current, ast.Attribute):
                 parts.append(current.attr)
                 current = current.value
@@ -87,12 +91,10 @@ class RuleEngine:
             if "responses" in full_name and "create" in full_name:
                 return True
         keywords = {kw.arg for kw in node.keywords if kw.arg}
-        if "messages" in keywords and ("model" in keywords or "system" in keywords):
-            return True
-        return False
+        return bool("messages" in keywords and ("model" in keywords or "system" in keywords))
 
     @staticmethod
-    def _keyword_node(node: ast.Call, name: str) -> Optional[ast.AST]:
+    def _keyword_node(node: ast.Call, name: str) -> ast.AST | None:
         for kw in node.keywords:
             if kw.arg == name:
                 return kw.value
@@ -105,10 +107,10 @@ class RuleEngine:
 
     # --- argument resolution ---
 
-    def _get_system_arg(self, node: ast.Call) -> Optional[ast.AST]:
+    def _get_system_arg(self, node: ast.Call) -> ast.AST | None:
         return self._keyword_node(node, "system")
 
-    def _get_messages_arg(self, node: ast.Call) -> Optional[ast.AST]:
+    def _get_messages_arg(self, node: ast.Call) -> ast.AST | None:
         for name in ("messages", "input"):
             value = self._keyword_node(node, name)
             if value is not None:
@@ -118,20 +120,21 @@ class RuleEngine:
             return node.args[1]
         return None
 
-    def _get_tools_arg(self, node: ast.Call) -> Optional[ast.AST]:
+    def _get_tools_arg(self, node: ast.Call) -> ast.AST | None:
         return self._keyword_node(node, "tools")
 
-    def _resolve_dict_node(self, node: ast.AST) -> Optional[ast.Dict]:
+    def _resolve_dict_node(self, node: ast.AST) -> ast.Dict | None:
         return self.tracker.resolve_dict(node)
 
-    def _resolve_list_node(self, node: ast.AST) -> Optional[ast.List]:
+    def _resolve_list_node(self, node: ast.AST) -> ast.List | None:
         return self.tracker.resolve_list(node)
 
     def _is_system_message(self, msg: ast.Dict) -> bool:
         for key, val in zip(msg.keys, msg.values):
-            if isinstance(key, ast.Constant) and key.value == "role":
-                if isinstance(val, ast.Constant) and val.value in ("system", "developer"):
-                    return True
+            if (isinstance(key, ast.Constant) and key.value == "role"
+                    and isinstance(val, ast.Constant)
+                    and val.value in ("system", "developer")):
+                return True
         return False
 
     def _has_cache_control(self, node: ast.AST) -> bool:
@@ -143,7 +146,7 @@ class RuleEngine:
     # --- PCL001: prefix-taint-injection ---
 
     def _report_pcl001(self, value: ast.AST, origin: TaintOrigin, context: str,
-                       *fallbacks: Optional[ast.AST]) -> None:
+                       *fallbacks: ast.AST | None) -> None:
         self._add(
             lineno=self._line_of(value, *fallbacks),
             col_offset=self._col_of(value, *fallbacks),
@@ -155,7 +158,7 @@ class RuleEngine:
         )
 
     def _report_first_taint(self, values: Sequence[ast.AST], context: str,
-                            *fallbacks: Optional[ast.AST]) -> bool:
+                            *fallbacks: ast.AST | None) -> bool:
         """Report the first prefix-tainted value in ``values``; True when one was found."""
         for value in values:
             origin = self.tracker.get_prefix_tainted(value)
@@ -201,7 +204,7 @@ class RuleEngine:
         messages_val = self._get_messages_arg(node)
         if messages_val is None:
             return
-        msg_elts: List[ast.AST] = []
+        msg_elts: list[ast.expr] = []
         if isinstance(messages_val, ast.List):
             msg_elts = messages_val.elts
         else:
@@ -269,9 +272,9 @@ class RuleEngine:
     @staticmethod
     def _has_sort_keys_arg(node: ast.Call) -> bool:
         for kw in node.keywords:
-            if kw.arg == "sort_keys":
-                if isinstance(kw.value, ast.Constant) and kw.value.value is True:
-                    return True
+            if (kw.arg == "sort_keys"
+                    and isinstance(kw.value, ast.Constant) and kw.value.value is True):
+                return True
         return False
 
     def _flows_into_prompt_or_llm(self, node: ast.Call) -> bool:
@@ -285,11 +288,10 @@ class RuleEngine:
         return False
 
     def _is_json_dumps(self, node: ast.Call) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if isinstance(node.func.value, ast.Name) and node.func.value.id == "json":
-                if node.func.attr == "dumps":
-                    return True
-        return False
+        func = node.func
+        return (isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name) and func.value.id == "json"
+                and func.attr == "dumps")
 
     # --- PCL003: set-iteration-in-prompt ---
 
@@ -302,9 +304,7 @@ class RuleEngine:
                 return True
         if isinstance(expr, ast.Name):
             return self.tracker.is_set_variable(expr.id, expr)
-        if isinstance(expr, (ast.Set, ast.SetComp)):
-            return True
-        return False
+        return bool(isinstance(expr, (ast.Set, ast.SetComp)))
 
     @staticmethod
     def _pcl003_fix() -> str:
@@ -314,31 +314,31 @@ class RuleEngine:
     def _check_pcl003(self, node: ast.AST) -> None:
         # Check join calls: "...".join(tag_set)
         if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "join":
-                if node.args and self._is_unsorted_set_expr(node.args[0]):
-                    self._add(
-                        lineno=node.lineno,
-                        col_offset=node.col_offset,
-                        rule_id="PCL003",
-                        rule_name="set-iteration-in-prompt",
-                        message="Set iterated in join() without sorted() - iteration order is non-deterministic",
-                        fix_suggestion=self._pcl003_fix(),
-                        severity="ERROR",
-                    )
-                    return
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
+                    and node.args and self._is_unsorted_set_expr(node.args[0])):
+                self._add(
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id="PCL003",
+                    rule_name="set-iteration-in-prompt",
+                    message="Set iterated in join() without sorted() - iteration order is non-deterministic",
+                    fix_suggestion=self._pcl003_fix(),
+                    severity="ERROR",
+                )
+                return
             # Check str(tag_set)
-            if isinstance(node.func, ast.Name) and node.func.id == "str":
-                if node.args and self._is_unsorted_set_expr(node.args[0]):
-                    self._add(
-                        lineno=node.lineno,
-                        col_offset=node.col_offset,
-                        rule_id="PCL003",
-                        rule_name="set-iteration-in-prompt",
-                        message="Set converted to string without sorted() - iteration order is non-deterministic",
-                        fix_suggestion=self._pcl003_fix(),
-                        severity="ERROR",
-                    )
-                    return
+            if (isinstance(node.func, ast.Name) and node.func.id == "str"
+                    and node.args and self._is_unsorted_set_expr(node.args[0])):
+                self._add(
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id="PCL003",
+                    rule_name="set-iteration-in-prompt",
+                    message="Set converted to string without sorted() - iteration order is non-deterministic",
+                    fix_suggestion=self._pcl003_fix(),
+                    severity="ERROR",
+                )
+                return
 
         # Check f-string interpolation: f"{tag_set}"
         if isinstance(node, ast.JoinedStr):

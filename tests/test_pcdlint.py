@@ -243,6 +243,7 @@ client.messages.create(
 def test_demo_good_file_passes_clean() -> None:
     """The clean demo_good.py must produce 0 errors or warnings."""
     from pathlib import Path
+
     from pcdlint.analyzer import analyze_path
 
     good_path = Path("demo_good.py")
@@ -254,6 +255,7 @@ def test_demo_good_file_passes_clean() -> None:
 def test_demo_buggy_file_triggers_all_rules() -> None:
     """The buggy demo_buggy.py must trigger all 4 rules: PCL001, PCL002, PCL003, PCL004."""
     from pathlib import Path
+
     from pcdlint.analyzer import analyze_path
 
     buggy_path = Path("demo_buggy.py")
@@ -268,8 +270,9 @@ def test_demo_buggy_file_triggers_all_rules() -> None:
 
 def test_cli_check_command() -> None:
     """CLI should support `check` subcommand transparently."""
-    from pcdlint.cli import main
     import sys
+
+    from pcdlint.cli import main
 
     old_argv = sys.argv
     try:
@@ -282,8 +285,9 @@ def test_cli_check_command() -> None:
 
 def test_cli_exit_code_on_errors() -> None:
     """CLI must return exit code 1 when errors are present."""
-    from pcdlint.cli import main
     import sys
+
+    from pcdlint.cli import main
 
     old_argv = sys.argv
     try:
@@ -559,8 +563,9 @@ client.messages.create(
 def test_cli_json_format_output(capsys: pytest.CaptureFixture) -> None:
     """CLI: --format json produces valid JSON with all diagnostic keys."""
     import json
-    from pcdlint.cli import main
     import sys
+
+    from pcdlint.cli import main
 
     old_argv = sys.argv
     try:
@@ -580,8 +585,9 @@ def test_cli_json_format_output(capsys: pytest.CaptureFixture) -> None:
 
 def test_cli_fail_on_warn_flag() -> None:
     """CLI: --fail-on-warn exits with 1 when warnings exist."""
-    from pcdlint.cli import main
     import sys
+
+    from pcdlint.cli import main
 
     old_argv = sys.argv
     try:
@@ -595,8 +601,9 @@ def test_cli_fail_on_warn_flag() -> None:
 
 def test_cli_version_flag() -> None:
     """CLI: --version outputs version string."""
-    from pcdlint.cli import main
     import sys
+
+    from pcdlint.cli import main
 
     old_argv = sys.argv
     try:
@@ -617,6 +624,7 @@ def test_analyzer_handles_syntax_error_gracefully() -> None:
 def test_analyze_path_directory(tmp_path: pytest.TempPathFactory) -> None:
     """analyze_path recursively walks directories and skips ignored folders."""
     from pathlib import Path
+
     from pcdlint.analyzer import analyze_path
 
     # Create directory with valid and buggy python files
@@ -635,8 +643,9 @@ def test_analyze_path_directory(tmp_path: pytest.TempPathFactory) -> None:
 
 def test_cli_no_args_prints_help(capsys: pytest.CaptureFixture) -> None:
     """CLI with no arguments displays help and returns 0."""
-    from pcdlint.cli import main
     import sys
+
+    from pcdlint.cli import main
 
     old_argv = sys.argv
     try:
@@ -650,6 +659,7 @@ def test_cli_no_args_prints_help(capsys: pytest.CaptureFixture) -> None:
 def test_tracker_properties_and_static_solids() -> None:
     """Test TaintTracker property accessors and file-read static prefix solid recognition."""
     import ast
+
     from pcdlint.taint import TaintTracker
 
     code = '''
@@ -707,6 +717,7 @@ def test_pcdlint_main_module() -> None:
         [sys.executable, "-m", "pcdlint", "--version"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 0
     assert "pcdlint" in result.stdout
@@ -721,6 +732,23 @@ z = x & y
 '''
     diags = analyze_code(code)
     assert diags == []
+
+
+def test_main_module_guard_body_runs() -> None:
+    """__main__.py's `if __name__ == "__main__"` body exits through main()."""
+    import runpy
+    import sys
+
+    import pcdlint.__main__ as entry
+
+    old_argv = sys.argv
+    try:
+        sys.argv = ["pcdlint"]
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_path(entry.__file__, run_name="__main__")
+    finally:
+        sys.argv = old_argv
+    assert excinfo.value.code == 0
 
 
 

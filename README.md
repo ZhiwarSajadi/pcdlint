@@ -92,6 +92,10 @@ pcdlint check src/ --format json
 # Fail on warnings (useful for CI)
 pcdlint check src/ --fail-on-warn
 
+# Run only some rules / skip others (overrides [tool.pcdlint])
+pcdlint check src/ --select PCL001,PCL003
+pcdlint check src/ --ignore PCL002
+
 # Equivalent module forms (no console script needed)
 python -m pcdlint check src/
 python -m pclint check src/
@@ -107,6 +111,51 @@ python -m pclint check src/
 
 Exit code `2` exists so a typo'd path or a broken file can never look like a clean run
 in CI. Errors are printed to stderr; `--format json` output on stdout stays valid JSON.
+
+## Configuration
+
+Rules can be turned on and off from `pyproject.toml` or the command line:
+
+```toml
+[tool.pcdlint]
+select = ["PCL001", "PCL003"]   # run only these rules
+ignore = ["PCL002"]             # skip these, applied after select
+```
+
+The **nearest `pyproject.toml` above each analyzed file** is used, so a monorepo
+can give every package its own rule set. `select` is an allowlist; `ignore` is a
+denylist applied after it.
+
+`--select` and `--ignore` take a comma-separated list and are repeatable. Each
+flag **replaces** the corresponding config value for that run rather than merging
+with it, so `--ignore PCL002` overrides a configured `ignore` list outright.
+
+A config with an unknown key, an unknown rule id, or broken TOML exits `2` with a
+message on stderr. It never falls back to defaults — otherwise `select = ["PCL999"]`
+would make the run look clean.
+
+## Suppressing a Finding
+
+Switch rules off on a single line with a `# pcdlint: disable` comment, placed on
+the line pcdlint reports:
+
+```python
+system = f"Time: {now}\n{STATIC_RULES}"  # pcdlint: disable
+```
+
+| Form | Scope |
+|------|-------|
+| `... # pcdlint: disable` | that line, every rule |
+| `... # pcdlint: disable=PCL001,PCL003` | that line, the named rules only |
+| `# pcdlint: disable` alone on its own line | the whole file |
+| `# pcdlint: disable=PCL002` alone on its own line | the whole file, the named rules only |
+
+Comments are read with Python's tokenizer, so the same text inside a string
+literal is data and does nothing. A marker naming a rule that does not exist
+suppresses nothing — a typo surfaces the finding instead of hiding it.
+
+Comment the line pcdlint prints. For `PCL001` that is the line holding the
+`system=...` argument, not the line where the tainted value was built.
 
 ## GitHub Actions CI Integration
 

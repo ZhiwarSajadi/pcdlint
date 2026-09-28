@@ -37,6 +37,9 @@ classifiers = [
 ]
 dependencies = [
     "rich>=13.0",
+    # tomllib only exists from 3.11; tomli is its backport and what 3.10 uses
+    # to read [tool.pcdlint].
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.urls]
@@ -46,7 +49,14 @@ Issues = "https://github.com/ZhiwarSajadi/pcdlint/issues"
 
 [project.optional-dependencies]
 dev = [
+    "mypy~=2.3.1",
     "pytest>=7.0",
+    "pytest-cov>=5.0",
+    # Pinned because ruff's curated default rule set is version-dependent;
+    # an explicit `select` would need all 413 default codes to reproduce it.
+    "ruff~=0.16.9",
+    # Always installed so mypy can check the 3.10 tomllib fallback branch.
+    "tomli>=2.0",
 ]
 
 [project.scripts]
@@ -62,3 +72,12 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-v"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+warn_unused_ignores = true

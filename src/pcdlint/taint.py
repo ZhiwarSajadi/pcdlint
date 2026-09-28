@@ -1,18 +1,21 @@
 """Static taint and prefix tracking engine for pcdlint."""
 
 import ast
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import replace
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import TypeVar
 
 from pcdlint.models import TaintOrigin
 
 # A lexical scope path, e.g. ("module",) or ("module", "handler", "inner").
-Scope = Tuple[str, ...]
+Scope = tuple[str, ...]
 MODULE_SCOPE: Scope = ("module",)
 # Scope-qualified binding key.
-Key = Tuple[Scope, str]
+Key = tuple[Scope, str]
+# Value type of a binding table, so _get() returns the table's own value type.
+_V = TypeVar("_V")
 
-TAINT_SOURCES: Dict[tuple, str] = {
+TAINT_SOURCES: dict[tuple, str] = {
     ("datetime", "now"): "datetime.now",
     ("datetime", "utcnow"): "datetime.utcnow",
     ("date", "today"): "date.today",
@@ -30,7 +33,7 @@ TAINT_SOURCES: Dict[tuple, str] = {
     ("os", "urandom"): "os.urandom",
 }
 
-STATIC_PREFIX_NAMES: Set[str] = {
+STATIC_PREFIX_NAMES: set[str] = {
     "SYSTEM_PROMPT", "KNOWLEDGE_BASE", "STATIC_RULES",
     "PROMPT", "SYSTEM_MESSAGE", "PREFIX", "HEADER", "STATIC_PROMPT",
 }
@@ -58,7 +61,7 @@ def _is_string_concat(node: ast.AST) -> bool:
     return isinstance(node, ast.JoinedStr) or (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add))
 
 
-def _static_str_len(node: ast.AST) -> Optional[int]:
+def _static_str_len(node: ast.AST) -> int | None:
     """Length of a statically evaluable string expression, or None.
 
     Handles string constants plus concatenation and repetition
@@ -92,7 +95,7 @@ def _has_sort_keys(node: ast.Call) -> bool:
     return False
 
 
-def _child_branch_flags(node: ast.AST, in_branch: bool, count: int) -> List[bool]:
+def _child_branch_flags(node: ast.AST, in_branch: bool, count: int) -> list[bool]:
     """Whether each child of ``node`` only executes on some control-flow paths."""
     if isinstance(node, ast.If):
         # test runs unconditionally; body/orelse do not.
@@ -111,21 +114,29 @@ class _Bindings:
     """Scope-keyed binding tables produced by one tracking pass."""
 
     __slots__ = (
-        "tainted", "prefix_tainted", "sets", "static", "tools_mutated",
-        "branch", "json_unsorted", "json_flows", "lists", "dicts",
+        "branch",
+        "dicts",
+        "json_flows",
+        "json_unsorted",
+        "lists",
+        "prefix_tainted",
+        "sets",
+        "static",
+        "tainted",
+        "tools_mutated",
     )
 
     def __init__(self) -> None:
-        self.tainted: Dict[Key, TaintOrigin] = {}
-        self.prefix_tainted: Dict[Key, TaintOrigin] = {}
-        self.sets: Set[Key] = set()
-        self.static: Dict[Key, str] = {}
-        self.tools_mutated: Set[Key] = set()
-        self.branch: Set[Key] = set()
-        self.json_unsorted: Set[Key] = set()
-        self.json_flows: Dict[Key, Set[int]] = {}
-        self.lists: Dict[Key, ast.List] = {}
-        self.dicts: Dict[Key, ast.Dict] = {}
+        self.tainted: dict[Key, TaintOrigin] = {}
+        self.prefix_tainted: dict[Key, TaintOrigin] = {}
+        self.sets: set[Key] = set()
+        self.static: dict[Key, str] = {}
+        self.tools_mutated: set[Key] = set()
+        self.branch: set[Key] = set()
+        self.json_unsorted: set[Key] = set()
+        self.json_flows: dict[Key, set[int]] = {}
+        self.lists: dict[Key, ast.List] = {}
+        self.dicts: dict[Key, ast.Dict] = {}
 
     def merge(self, other: "_Bindings") -> None:
         self.tainted.update(other.tainted)
@@ -145,18 +156,20 @@ class _Bindings:
         for store in (self.tainted, self.prefix_tainted, self.static,
                       self.json_flows, self.lists, self.dicts):
             store.pop(key, None)
-        for store in (self.sets, self.tools_mutated, self.branch, self.json_unsorted):
-            store.discard(key)
+        # Separate name: these are sets, and the dict stores above would
+        # otherwise drive mypy's inference for both loops.
+        for set_store in (self.sets, self.tools_mutated, self.branch, self.json_unsorted):
+            set_store.discard(key)
 
 
 class TaintTracker:
     """Tracks tainted variables and static prefix solids across an AST."""
 
     def __init__(self) -> None:
-        self._node_scope: Dict[int, Scope] = {}
-        self._node_branch: Dict[int, bool] = {}
+        self._node_scope: dict[int, Scope] = {}
+        self._node_branch: dict[int, bool] = {}
         self._b = _Bindings()
-        self._func_returns: Dict[Key, TaintOrigin] = {}
+        self._func_returns: dict[Key, TaintOrigin] = {}
 
     # ------------------------------------------------------------------
     # Scopes and branch positions
@@ -164,7 +177,7 @@ class TaintTracker:
 
     def build_scopes(self, tree: ast.AST) -> None:
         """Map every node to its lexical scope and whether it sits in a branch."""
-        stack: List[Tuple[ast.AST, Scope, bool]] = [(tree, MODULE_SCOPE, False)]
+        stack: list[tuple[ast.AST, Scope, bool]] = [(tree, MODULE_SCOPE, False)]
         while stack:
             node, scope, in_branch = stack.pop()
             self._node_scope[id(node)] = scope
@@ -185,30 +198,30 @@ class TaintTracker:
         """True when the node only runs on some paths (if/loop/try body)."""
         return self._node_branch.get(id(node), False)
 
-    def _candidates(self, store: object, name: str,
-                    node: Optional[ast.AST], scope: Optional[Scope]) -> Iterator[Key]:
+    def _candidates(self, store: Iterable[Key], name: str,
+                    node: ast.AST | None, scope: Scope | None) -> Iterator[Key]:
         """Keys to try for ``name``, innermost scope first."""
         if scope is None:
             scope = self.scope_of(node) if node is not None else None
         if scope is None:
             # Legacy bare-name lookup: module scope, then any other scope.
             yield (MODULE_SCOPE, name)
-            for key in store:  # type: ignore[union-attr]
+            for key in store:
                 if key[1] == name and key != (MODULE_SCOPE, name):
                     yield key
             return
         for i in range(len(scope), 0, -1):
             yield (scope[:i], name)
 
-    def _get(self, store: Dict, name: str, node: Optional[ast.AST] = None,
-             scope: Optional[Scope] = None) -> Optional[object]:
+    def _get(self, store: Mapping[Key, _V], name: str, node: ast.AST | None = None,
+             scope: Scope | None = None) -> _V | None:
         for key in self._candidates(store, name, node, scope):
             if key in store:
                 return store[key]
         return None
 
-    def _has(self, store: Set, name: str, node: Optional[ast.AST] = None,
-             scope: Optional[Scope] = None) -> bool:
+    def _has(self, store: Iterable[Key], name: str, node: ast.AST | None = None,
+             scope: Scope | None = None) -> bool:
         return any(key in store for key in self._candidates(store, name, node, scope))
 
     # ------------------------------------------------------------------
@@ -216,40 +229,40 @@ class TaintTracker:
     # ------------------------------------------------------------------
 
     @property
-    def tainted_vars(self) -> Dict[str, TaintOrigin]:
+    def tainted_vars(self) -> dict[str, TaintOrigin]:
         return {name: origin for (_scope, name), origin in self._b.tainted.items()}
 
     @property
-    def prefix_tainted_vars(self) -> Dict[str, TaintOrigin]:
+    def prefix_tainted_vars(self) -> dict[str, TaintOrigin]:
         return {name: origin for (_scope, name), origin in self._b.prefix_tainted.items()}
 
     @property
-    def set_vars(self) -> Set[str]:
+    def set_vars(self) -> set[str]:
         return {name for (_scope, name) in self._b.sets}
 
     @property
-    def static_prefix_vars(self) -> Dict[str, str]:
+    def static_prefix_vars(self) -> dict[str, str]:
         return {name: value for (_scope, name), value in self._b.static.items()}
 
     @property
-    def json_flows(self) -> Dict[Key, Set[int]]:
+    def json_flows(self) -> dict[Key, set[int]]:
         """Vars whose value embeds an unsorted ``json.dumps`` call (by node id)."""
         return self._b.json_flows
 
-    def resolve_dict(self, node: ast.AST) -> Optional[ast.Dict]:
+    def resolve_dict(self, node: ast.AST) -> ast.Dict | None:
         """Dict literal bound to the name in ``node``."""
         if isinstance(node, ast.Dict):
             return node
         if isinstance(node, ast.Name):
-            return self._get(self._b.dicts, node.id, node)  # type: ignore[return-value]
+            return self._get(self._b.dicts, node.id, node)
         return None
 
-    def resolve_list(self, node: ast.AST) -> Optional[ast.List]:
+    def resolve_list(self, node: ast.AST) -> ast.List | None:
         """List literal bound to the name in ``node``."""
         if isinstance(node, ast.List):
             return node
         if isinstance(node, ast.Name):
-            return self._get(self._b.lists, node.id, node)  # type: ignore[return-value]
+            return self._get(self._b.lists, node.id, node)
         return None
 
     def mark_tools_mutated(self, var_name: str, node: ast.AST) -> None:
@@ -262,7 +275,7 @@ class TaintTracker:
     # Queries
     # ------------------------------------------------------------------
 
-    def is_taint_source(self, node: ast.Call) -> Optional[TaintOrigin]:
+    def is_taint_source(self, node: ast.Call) -> TaintOrigin | None:
         """Check if an ast.Call is a known non-deterministic taint source."""
         dotted = _extract_dotted_name(node.func)
         if not dotted:
@@ -288,18 +301,19 @@ class TaintTracker:
         if length is not None:
             return length >= STATIC_SOLID_MIN_CHARS
         if isinstance(node, ast.Name):
-            if node.id in STATIC_PREFIX_NAMES or self._get(self._b.static, node.id, node):
+            solid = self._get(self._b.static, node.id, node)
+            if node.id in STATIC_PREFIX_NAMES or solid:
                 return True
             if node.id.isupper():
                 return True
         return False
 
-    def _flatten_string_expr(self, node: ast.AST) -> List[ast.AST]:
+    def _flatten_string_expr(self, node: ast.AST) -> list[ast.AST]:
         """Flatten nested BinOp(op=Add) and JoinedStr into an ordered list of part nodes."""
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return self._flatten_string_expr(node.left) + self._flatten_string_expr(node.right)
         if isinstance(node, ast.JoinedStr):
-            parts: List[ast.AST] = []
+            parts: list[ast.AST] = []
             for val in node.values:
                 if isinstance(val, ast.FormattedValue):
                     parts.extend(self._flatten_string_expr(val.value))
@@ -308,13 +322,13 @@ class TaintTracker:
             return parts
         return [node]
 
-    def get_taint_origin_of_node(self, node: ast.AST) -> Optional[TaintOrigin]:
+    def get_taint_origin_of_node(self, node: ast.AST) -> TaintOrigin | None:
         """Resolve TaintOrigin from an AST node if it contains taint."""
         if isinstance(node, ast.FormattedValue):
             return self.get_taint_origin_of_node(node.value)
         if isinstance(node, ast.Name):
             origin = self._get(self._b.tainted, node.id, node)
-            return origin if origin else None  # type: ignore[return-value]
+            return origin if origin else None
         if isinstance(node, ast.Attribute):
             return self.get_taint_origin_of_node(node.value)
         if isinstance(node, ast.Call):
@@ -325,7 +339,7 @@ class TaintTracker:
                 # Result of a local function that returns tainted data.
                 func_origin = self._get(self._func_returns, node.func.id, node)
                 if func_origin:
-                    return func_origin  # type: ignore[return-value]
+                    return func_origin
             # Method call on tainted object: e.g. now.isoformat(), datetime.now().strftime(...)
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
@@ -355,7 +369,7 @@ class TaintTracker:
             return None
         return None
 
-    def check_sequence_prefix_taint(self, parts: List[ast.AST]) -> Optional[TaintOrigin]:
+    def check_sequence_prefix_taint(self, parts: list[ast.AST]) -> TaintOrigin | None:
         """Determine if a sequence of string parts contains prefix taint.
 
         Rules:
@@ -366,8 +380,8 @@ class TaintTracker:
           within the first 500 characters of static text, it is PREFIX_TAINTED.
         """
         first_taint_idx = -1
-        first_taint_origin: Optional[TaintOrigin] = None
-        static_solid_indices: List[int] = []
+        first_taint_origin: TaintOrigin | None = None
+        static_solid_indices: list[int] = []
         static_chars_before_first_taint = 0
 
         for idx, part in enumerate(parts):
@@ -396,9 +410,8 @@ class TaintTracker:
             return None
 
         # Rule 3: No static solid, taint within first 500 characters of static text
-        if not static_solid_indices:
-            if static_chars_before_first_taint < 500:
-                return first_taint_origin
+        if not static_solid_indices and static_chars_before_first_taint < 500:
+            return first_taint_origin
 
         return None
 
@@ -408,7 +421,7 @@ class TaintTracker:
 
     def track_assignment(self, node: ast.AST) -> None:
         """Analyze an assignment statement (Assign or AnnAssign) and update states."""
-        targets: List[str] = []
+        targets: list[str] = []
         value = None
         if isinstance(node, ast.Assign):
             for t in node.targets:
@@ -459,15 +472,15 @@ class TaintTracker:
             src = value.id
             origin = self._get(self._b.tainted, src, value)
             if origin:
-                buf.tainted[key] = origin  # type: ignore[assignment]
+                buf.tainted[key] = origin
             prefix_origin = self._get(self._b.prefix_tainted, src, value)
             if prefix_origin:
-                buf.prefix_tainted[key] = prefix_origin  # type: ignore[assignment]
+                buf.prefix_tainted[key] = prefix_origin
             if self._has(self._b.sets, src, value):
                 buf.sets.add(key)
             static = self._get(self._b.static, src, value)
             if static:
-                buf.static[key] = static  # type: ignore[assignment]
+                buf.static[key] = static
             if self._has(self._b.tools_mutated, src, value):
                 buf.tools_mutated.add(key)
             if self._has(self._b.branch, src, value):
@@ -476,13 +489,13 @@ class TaintTracker:
                 buf.json_unsorted.add(key)
             flows = self._get(self._b.json_flows, src, value)
             if flows:
-                buf.json_flows[key] = set(flows)  # type: ignore[arg-type]
+                buf.json_flows[key] = set(flows)
             lst = self._get(self._b.lists, src, value)
             if lst:
-                buf.lists[key] = lst  # type: ignore[assignment]
+                buf.lists[key] = lst
             dct = self._get(self._b.dicts, src, value)
             if dct:
-                buf.dicts[key] = dct  # type: ignore[assignment]
+                buf.dicts[key] = dct
             return
 
         # 1. Dict expressions
@@ -563,8 +576,9 @@ class TaintTracker:
 
         # 8. Format call: "...".format(...)
         if isinstance(value, ast.Call) and self._is_format_call(value):
-            parts = list(value.args) + [kw.value for kw in value.keywords if kw.value]
-            origin = self.check_sequence_prefix_taint(parts) if parts else None
+            fmt_parts: list[ast.AST] = list(value.args)
+            fmt_parts.extend(kw.value for kw in value.keywords if kw.value)
+            origin = self.check_sequence_prefix_taint(fmt_parts) if fmt_parts else None
             if origin:
                 buf.tainted[key] = origin
                 buf.prefix_tainted[key] = origin
@@ -592,16 +606,16 @@ class TaintTracker:
         if self._references_branch_var(value):
             buf.branch.add(key)
 
-    def _unsorted_json_nodes(self, node: ast.AST) -> Set[int]:
+    def _unsorted_json_nodes(self, node: ast.AST) -> set[int]:
         """Ids of unsorted ``json.dumps`` calls that flow into ``node``."""
-        out: Set[int] = set()
+        out: set[int] = set()
         for sub in ast.walk(node):
             if isinstance(sub, ast.Call) and self._is_json_dumps(sub) and not _has_sort_keys(sub):
                 out.add(id(sub))
             elif isinstance(sub, ast.Name):
                 flows = self._get(self._b.json_flows, sub.id, sub)
                 if flows:
-                    out |= set(flows)  # type: ignore[arg-type]
+                    out |= set(flows)
         return out
 
     def _references_branch_var(self, node: ast.AST) -> bool:
@@ -618,7 +632,7 @@ class TaintTracker:
             key = (scope, node.target.id)
             current = self._get(self._b.lists, node.target.id, node)
             if current and isinstance(node.value, ast.List):
-                current.elts.extend(node.value.elts)  # type: ignore[union-attr]
+                current.elts.extend(node.value.elts)
             if node.target.id == "tools":
                 self._b.tools_mutated.add(key)
             if self.in_branch(node):
@@ -634,9 +648,9 @@ class TaintTracker:
     def track_expr_stmt(self, node: ast.Expr) -> None:
         """Track standalone expressions such as random.shuffle(tools) or list.append()."""
         if isinstance(node.value, ast.Call):
-            if self._is_shuffle_call(node.value):
-                if node.value.args and isinstance(node.value.args[0], ast.Name):
-                    self.mark_tools_mutated(node.value.args[0].id, node.value.args[0])
+            if (self._is_shuffle_call(node.value)
+                    and node.value.args and isinstance(node.value.args[0], ast.Name)):
+                self.mark_tools_mutated(node.value.args[0].id, node.value.args[0])
             if isinstance(node.value.func, ast.Attribute):
                 attr = node.value.func.attr
                 caller = node.value.func.value
@@ -646,7 +660,7 @@ class TaintTracker:
                     if attr == "append" and node.value.args:
                         lst = self._get(self._b.lists, caller.id, caller)
                         if lst:
-                            lst.elts.append(node.value.args[0])  # type: ignore[union-attr]
+                            lst.elts.append(node.value.args[0])
                     elif attr == "extend" and node.value.args:
                         arg = node.value.args[0]
                         lst = self._get(self._b.lists, caller.id, caller)
@@ -664,8 +678,8 @@ class TaintTracker:
 
         Returns True when a new function return origin was recorded.
         """
-        returns: Dict[Scope, List[ast.AST]] = {}
-        defs: Dict[Scope, List[str]] = {}
+        returns: dict[Scope, list[ast.AST]] = {}
+        defs: dict[Scope, list[str]] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Return) and node.value is not None:
                 returns.setdefault(self.scope_of(node), []).append(node.value)
@@ -699,7 +713,7 @@ class TaintTracker:
     def _is_join_call(self, node: ast.Call) -> bool:
         return isinstance(node.func, ast.Attribute) and node.func.attr == "join"
 
-    def _find_origin_in_format(self, node: ast.Call) -> Optional[TaintOrigin]:
+    def _find_origin_in_format(self, node: ast.Call) -> TaintOrigin | None:
         for arg in node.args:
             origin = self.get_taint_origin_of_node(arg)
             if origin:
@@ -725,11 +739,11 @@ class TaintTracker:
         dotted = _extract_dotted_name(node.func)
         return dotted in ("json.dumps", "dumps")
 
-    def get_prefix_tainted(self, node: ast.AST) -> Optional[TaintOrigin]:
+    def get_prefix_tainted(self, node: ast.AST) -> TaintOrigin | None:
         """Check if an AST expression is prefix-tainted and return its TaintOrigin."""
         if isinstance(node, ast.Name):
             origin = self._get(self._b.prefix_tainted, node.id, node)
-            return origin if origin else None  # type: ignore[return-value]
+            return origin if origin else None
         if _is_string_concat(node):
             parts = self._flatten_string_expr(node)
             return self.check_sequence_prefix_taint(parts)
@@ -740,7 +754,7 @@ class TaintTracker:
             if isinstance(node.func, ast.Name):
                 func_origin = self._get(self._func_returns, node.func.id, node)
                 if func_origin:
-                    return func_origin  # type: ignore[return-value]
+                    return func_origin
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
                 if caller_origin:
@@ -758,17 +772,17 @@ class TaintTracker:
                     return origin
         return None
 
-    def is_tainted_variable(self, var_name: str, node: Optional[ast.AST] = None) -> bool:
+    def is_tainted_variable(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.tainted, var_name, node)
 
-    def is_set_variable(self, var_name: str, node: Optional[ast.AST] = None) -> bool:
+    def is_set_variable(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.sets, var_name, node)
 
-    def is_tools_mutated(self, var_name: str, node: Optional[ast.AST] = None) -> bool:
+    def is_tools_mutated(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.tools_mutated, var_name, node)
 
-    def is_json_unsorted(self, var_name: str, node: Optional[ast.AST] = None) -> bool:
+    def is_json_unsorted(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.json_unsorted, var_name, node)
 
-    def is_branch_var(self, var_name: str, node: Optional[ast.AST] = None) -> bool:
+    def is_branch_var(self, var_name: str, node: ast.AST | None = None) -> bool:
         return self._has(self._b.branch, var_name, node)

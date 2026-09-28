@@ -3,21 +3,28 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
 
+from pcdlint import __version__, config
 from pcdlint.analyzer import analyze_path_ex
-from pcdlint import __version__
 
 
 def main() -> int:
-    # Ensure UTF-8 output encoding across platforms (prevent Windows charmap/cp1252 errors)
-    if hasattr(sys.stdout, "reconfigure"):
+    # Ensure UTF-8 output encoding across platforms (prevent Windows charmap/cp1252
+    # errors). sys.stdout is typed TextIO but may be a wrapper object at runtime, so
+    # reconfigure() is probed duck-typed exactly as before.
+    out: Any = sys.stdout
+    err: Any = sys.stderr
+    if hasattr(out, "reconfigure"):
         try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
+            out.reconfigure(encoding="utf-8", errors="replace")
+            err.reconfigure(encoding="utf-8", errors="replace")
+        # reconfigure() fails only when the stream refuses a new encoding, and a
+        # lossy stream beats a dead run. Anything else is a genuine bug worth surfacing.
+        except (OSError, ValueError, AttributeError):
             pass
 
     parser = argparse.ArgumentParser(
@@ -37,9 +44,26 @@ def main() -> int:
         help="Exit with code 1 if any WARNING is found",
     )
     parser.add_argument(
+        "--select", action="append", metavar="RULES", default=None,
+        help="Comma-separated rule ids to run (repeatable); overrides "
+             "[tool.pcdlint] select",
+    )
+    parser.add_argument(
+        "--ignore", action="append", metavar="RULES", default=None,
+        help="Comma-separated rule ids to skip (repeatable); overrides "
+             "[tool.pcdlint] ignore",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"pcdlint {__version__}",
     )
     args = parser.parse_args()
+
+    try:
+        select = config.parse_rule_list(args.select, "--select") if args.select else None
+        ignore = config.parse_rule_list(args.ignore, "--ignore") if args.ignore else None
+    except config.ConfigError as exc:
+        print(f"pcdlint: error: {exc}", file=sys.stderr)
+        return 2
 
     if not args.paths:
         parser.print_help()
@@ -56,7 +80,7 @@ def main() -> int:
     all_errors = []
     for path_str in raw_paths:
         path = Path(path_str)
-        diags, errors = analyze_path_ex(path)
+        diags, errors = analyze_path_ex(path, select=select, ignore=ignore)
         all_diagnostics.extend(diags)
         all_errors.extend(errors)
 
@@ -68,7 +92,9 @@ def main() -> int:
         _print_text(all_diagnostics)
 
     # A path we could not analyze must never look clean, so report it loudly.
-    for message in all_errors:
+    # dict.fromkeys dedupes: one broken config produces one message, not one
+    # per file it touches.
+    for message in dict.fromkeys(all_errors):
         print(f"pcdlint: error: {message}", file=sys.stderr)
 
     if all_errors:

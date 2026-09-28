@@ -278,7 +278,7 @@ def test_analyze_path_ex_reports_unreadable_file_in_directory(tmp_path) -> None:
 
     (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "bad.py").write_bytes(b'x = "\xff\xfe"\n')
-    diagnostics, errors = analyze_path_ex(tmp_path)
+    _diagnostics, errors = analyze_path_ex(tmp_path)
     assert errors and "bad.py" in errors[0]
 
 

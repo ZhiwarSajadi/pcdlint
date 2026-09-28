@@ -25,10 +25,17 @@ pytest tests/test_pcdlint.py -k test_pcl001_detects_datetime_at_start_of_system_
 
 # Run tests via Python module (when pytest is not directly on PATH)
 python -m pytest
+
+# Run tests under the CI coverage gate (90% floor)
+python -m pytest --cov=pcdlint --cov-fail-under=90 --cov-report=term-missing
 ```
 
 ### Linting & Running pcdlint
 ```bash
+# Ruff and mypy (both run in CI; mypy config pins python_version = 3.10)
+ruff check src/ tests/
+mypy
+
 # Lint current codebase (used in CI)
 pcdlint check src/ tests/ --fail-on-warn
 
@@ -74,6 +81,13 @@ pcdlint.analyzer.analyze_path(_ex) / analyze_code(_ex)
         │     - Pre-scans for variables that reach an LLM sink call
         │     - Evaluates AST nodes against 4 lint rules (source-order walk)
         │
+        ├─► pcdlint.disables.parse(source_code) + pcdlint.config.load_for(file_path)
+        │     - Single suppression point: rules never see comments or config
+        │     - Drops findings under `# pcdlint: disable` (line / named / file scope)
+        │     - Applies allowlist-then-denylist select/ignore (CLI flags override config)
+        │     - A bad config is returned as an error, so it exits 2 rather than
+        │       silently running different rules than were asked for
+        │
         ▼
 Deduplicated Diagnostics (sorted by file, lineno, col_offset)
         │
@@ -96,6 +110,6 @@ and `tests/test_hardening.py` (regression + robustness cases).
 | `PCL004` | `dynamic-tools-mutation` | WARNING | `tools` parameter altered conditionally in if/else, shuffled, built from an unordered set, or assembled from a branch-assigned helper |
 
 ### Package Structure & Aliases
-- `src/pcdlint/`: Primary implementation containing `analyzer.py`, `taint.py`, `rules.py`, `models.py`, `cli.py`.
+- `src/pcdlint/`: Primary implementation containing `analyzer.py`, `taint.py`, `rules.py`, `models.py`, `cli.py`, plus `disables.py` (parses `# pcdlint: disable` comments with `tokenize`) and `config.py` (reads `[tool.pcdlint]` from the nearest `pyproject.toml` above each file, via `tomllib`/`tomli`).
 - `src/pclint/`: Backward-compatible alias package that re-exports all models, tracker, engine, and CLI functions from `pcdlint`.
 - Both `pcdlint` and `pclint` commands map to `pcdlint.cli:main` in `pyproject.toml`.
