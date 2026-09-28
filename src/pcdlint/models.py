@@ -57,3 +57,7 @@ class Diagnostic:
     # Concrete rewrites for rules whose fix is mechanical. Empty for rules
     # where only a human can decide what the right code looks like.
     edits: tuple[TextEdit, ...] = ()
+    # Span the finding covers, so a consumer can underline it rather than
+    # plant a caret at one column. None only where ast recorded no end.
+    end_lineno: int | None = None
+    end_col_offset: int | None = None

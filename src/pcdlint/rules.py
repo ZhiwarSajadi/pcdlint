@@ -69,6 +69,17 @@ RULE_SHORT_DESCRIPTIONS: dict[str, str] = {
     "PCL005": "Dynamic value before a cache_control breakpoint, a total miss on Anthropic",
 }
 
+# Severity each rule is reported at. Kept beside the catalog so SARIF's
+# defaultConfiguration -- which a consumer reads before any finding exists --
+# cannot disagree with what the engine emits.
+RULE_SEVERITIES: dict[str, str] = {
+    "PCL001": "ERROR",
+    "PCL002": "WARNING",
+    "PCL003": "ERROR",
+    "PCL004": "WARNING",
+    "PCL005": "ERROR",
+}
+
 
 def _end_pos(node: ast.AST) -> tuple[int, int] | None:
     """``(line, byte_col)`` just past ``node``, when ast recorded one."""
@@ -77,6 +88,17 @@ def _end_pos(node: ast.AST) -> tuple[int, int] | None:
     if line is None or col is None:
         return None
     return line, col
+
+
+def _end_of(*nodes: ast.AST | None) -> tuple[int, int] | None:
+    """Span end from the same node :meth:`RuleEngine._line_of` would pick."""
+    for node in nodes:
+        if node is not None and hasattr(node, "lineno"):
+            span_end = _end_pos(node)
+            if span_end is not None:
+                return span_end
+            return getattr(node, "lineno", 1), getattr(node, "col_offset", 0)
+    return None
 
 
 def _insert_before(node: ast.expr, text: str) -> TextEdit | None:
@@ -153,7 +175,8 @@ class RuleEngine:
 
     def _add(self, lineno: int, col_offset: int, rule_id: str, rule_name: str,
              message: str, fix_suggestion: str, severity: str,
-             edits: tuple[TextEdit, ...] = ()) -> None:
+             edits: tuple[TextEdit, ...] = (),
+             end: tuple[int, int] | None = None) -> None:
         self._diagnostics.append(Diagnostic(
             file_path=self._file_path,
             lineno=lineno,
@@ -164,6 +187,8 @@ class RuleEngine:
             fix_suggestion=fix_suggestion,
             severity=severity,
             edits=edits,
+            end_lineno=end[0] if end is not None else None,
+            end_col_offset=end[1] if end is not None else None,
         ))
 
     @staticmethod
@@ -261,6 +286,7 @@ class RuleEngine:
             message=f"Prefix taint detected: '{origin.source_call}' {context}",
             fix_suggestion=self._prefix_fix(origin.source_call),
             severity="ERROR",
+            end=_end_of(value, *fallbacks),
         )
 
     def _prefix_fix(self, source_call: str) -> str:
@@ -367,6 +393,7 @@ class RuleEngine:
                         "the last cache_control breakpoint, or into the "
                         "final user message."),
                     severity="ERROR",
+                    end=_end_of(value, node),
                 )
                 return
 
@@ -466,6 +493,7 @@ class RuleEngine:
                                "(merged dicts, sets, DB rows, ** spreads).",
                 severity="WARNING",
                 edits=self._pcl002_edits(node),
+                end=_end_pos(node),
             )
 
     @staticmethod
@@ -576,6 +604,7 @@ class RuleEngine:
                     fix_suggestion=self._pcl003_fix(),
                     severity="ERROR",
                     edits=self._pcl003_edits_for(node.args[0]),
+                    end=_end_pos(node),
                 )
                 return
             # Check str(tag_set)
@@ -591,6 +620,7 @@ class RuleEngine:
                     fix_suggestion=self._pcl003_fix(),
                     severity="ERROR",
                     edits=self._pcl003_edits_for(node.args[0]),
+                    end=_end_pos(node),
                 )
                 return
 
@@ -609,6 +639,7 @@ class RuleEngine:
                         fix_suggestion=self._pcl003_fix(),
                         severity="ERROR",
                         edits=self._pcl003_edits_for(part.value),
+                        end=_end_pos(part),
                     )
                     return
 
@@ -641,6 +672,7 @@ class RuleEngine:
                     message=f"Tools list '{var_name}' may have been dynamically mutated",
                     fix_suggestion=self._pcl004_fix(),
                     severity="WARNING",
+                    end=_end_pos(tools_var),
                 )
         elif isinstance(tools_var, (ast.Set, ast.SetComp)):
             self._add(
@@ -651,6 +683,7 @@ class RuleEngine:
                 message="Tools list passed as set with non-deterministic order",
                 fix_suggestion=self._pcl004_fix(),
                 severity="WARNING",
+                end=_end_pos(tools_var),
             )
         elif isinstance(tools_var, ast.Call) and isinstance(tools_var.func, ast.Name) \
                 and tools_var.func.id == "list" and tools_var.args:
@@ -666,4 +699,5 @@ class RuleEngine:
                     message="Tools list constructed from set without deterministic ordering",
                     fix_suggestion=self._pcl004_fix(),
                     severity="WARNING",
+                    end=_end_pos(tools_var),
                 )

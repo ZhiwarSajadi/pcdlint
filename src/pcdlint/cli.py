@@ -13,7 +13,7 @@ from rich.table import Table
 from pcdlint import __version__, config
 from pcdlint.analyzer import analyze_path_ex
 from pcdlint.fixer import apply_edits
-from pcdlint.rules import KNOWN_RULE_IDS, RULE_SHORT_DESCRIPTIONS
+from pcdlint.rules import KNOWN_RULE_IDS, RULE_SEVERITIES, RULE_SHORT_DESCRIPTIONS
 
 # Shown as the tool's informationUri and every rule's helpUri in SARIF.
 _REPO_URL = "https://github.com/ZhiwarSajadi/pcdlint"
@@ -375,6 +375,50 @@ def _sarif_uri(file_path: str) -> str:
     return path.as_posix()
 
 
+def _read_source_lines(file_path: str) -> tuple[str, ...] | None:
+    """Source lines of ``file_path``, or None when it cannot be read.
+
+    Columns have to be converted against the real line: ast's ``col_offset``
+    is a UTF-8 byte offset while SARIF's is UTF-16 units, so the two disagree
+    everywhere a non-ASCII character sits before the finding.
+    """
+    try:
+        data = Path(file_path).read_bytes()
+    except OSError:
+        return None
+    try:
+        return tuple(data.decode("utf-8-sig").splitlines())
+    except UnicodeDecodeError:
+        return None
+
+
+def _utf16_col(line: str, byte_col: int) -> int:
+    """1-based SARIF column for a 0-based UTF-8 byte offset into ``line``."""
+    prefix = line.encode("utf-8")[:byte_col].decode("utf-8", errors="replace")
+    return len(prefix.encode("utf-16-le")) // 2 + 1
+
+
+def _region(d, sources: dict) -> dict:
+    """SARIF region for a finding, in SARIF's own column units."""
+    lines = sources.get(d.file_path)
+
+    def column(lineno: int, byte_col: int) -> int:
+        if lines is not None and 1 <= lineno <= len(lines):
+            return _utf16_col(lines[lineno - 1], byte_col)
+        # Unreadable file: a byte offset beats no position at all.
+        return byte_col + 1
+
+    end_line = d.end_lineno if d.end_lineno is not None else d.lineno
+    end_col = (d.end_col_offset if d.end_col_offset is not None
+               else d.col_offset)
+    return {
+        "startLine": d.lineno,
+        "startColumn": column(d.lineno, d.col_offset),
+        "endLine": end_line,
+        "endColumn": column(end_line, end_col),
+    }
+
+
 def _print_sarif(diagnostics: list) -> None:
     import json
 
@@ -383,9 +427,17 @@ def _print_sarif(diagnostics: list) -> None:
             "id": rule_id,
             "shortDescription": {"text": RULE_SHORT_DESCRIPTIONS[rule_id]},
             "helpUri": f"{_REPO_URL}#readme",
+            # Read before any result exists, so it has to be declared even
+            # for a rule that found nothing this run.
+            "defaultConfiguration": {
+                "level": ("error" if RULE_SEVERITIES[rule_id] == "ERROR"
+                          else "warning"),
+            },
         }
         for rule_id in sorted(KNOWN_RULE_IDS)
     ]
+    sources = {path: _read_source_lines(path)
+               for path in {d.file_path for d in diagnostics}}
     results = [
         {
             "ruleId": d.rule_id,
@@ -395,11 +447,7 @@ def _print_sarif(diagnostics: list) -> None:
                 {
                     "physicalLocation": {
                         "artifactLocation": {"uri": _sarif_uri(d.file_path)},
-                        # SARIF columns are 1-based; ast reports 0-based.
-                        "region": {
-                            "startLine": d.lineno,
-                            "startColumn": d.col_offset + 1,
-                        },
+                        "region": _region(d, sources),
                     }
                 }
             ],

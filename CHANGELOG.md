@@ -21,6 +21,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Changed
 
+- SARIF output is closer to what Code Scanning expects. Columns are converted
+  to SARIF's own units -- ast reports UTF-8 byte offsets, SARIF defaults to
+  UTF-16, so the two disagreed on every line with a non-ASCII character
+  before the finding. Regions now carry `endLine`/`endColumn` (the
+  `Diagnostic` keeps both ends), and every rule declares
+  `defaultConfiguration.level` so a consumer can filter on severity before
+  any result exists. Optional items left alone: SARIF `fixes` for the
+  mechanical rewrites, and `originalUriBaseIds` for repo-root-relative URIs.
 - README accuracy pass: the examples now use `gpt-4o` (the old `gpt-4` does
   not support prompt caching, so the snippet never cached), the flat "10x
   read discount" is now "up to 90% cheaper, depending on provider and model"

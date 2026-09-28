@@ -426,3 +426,75 @@ def test_sarif_uri_keeps_a_path_outside_the_working_tree(tmp_path,
     outside = Path(Path.cwd().anchor) / "somewhere" / "other.py"
 
     assert _sarif_uri(str(outside)) == outside.as_posix()
+
+
+# --- P3-3: SARIF fidelity -------------------------------------------------
+
+# `é` is 2 UTF-8 bytes but 1 UTF-16 unit, and it sits before the reported
+# column, so the two counts disagree by one on this line.
+_NON_ASCII = (
+    "from datetime import datetime\n"
+    "client.messages.create(model='é', "
+    "system=f'{datetime.now()}' + 'STATIC RULES ' * 30, messages=[])\n"
+)
+
+
+def test_sarif_columns_count_utf16_units(tmp_path, monkeypatch, capsys) -> None:
+    """ast's col_offset counts UTF-8 bytes; SARIF's default is UTF-16 units."""
+    target = tmp_path / "sample.py"
+    target.write_text(_NON_ASCII, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    _code, json_out, _err = _run_cli(
+        ["check", "sample.py", "--format", "json"], capsys)
+    byte_col = json.loads(json_out)[0]["col_offset"]
+    line = target.read_text(encoding="utf-8").splitlines()[1]
+    expected = (len(line.encode("utf-8")[:byte_col].decode("utf-8")
+                    .encode("utf-16-le")) // 2) + 1
+
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+    region = data["runs"][0]["results"][0]["locations"][0][
+        "physicalLocation"]["region"]
+
+    assert region["startColumn"] == expected, region
+    assert region["startColumn"] != byte_col + 1, "columns were not converted"
+
+
+def test_sarif_reports_the_end_of_the_finding(tmp_path, monkeypatch,
+                                               capsys) -> None:
+    _write(tmp_path, monkeypatch)
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+    region = data["runs"][0]["results"][0]["locations"][0][
+        "physicalLocation"]["region"]
+
+    assert region["endLine"] >= region["startLine"]
+    assert (region["endLine"], region["endColumn"]) > (
+        region["startLine"], region["startColumn"])
+
+
+def test_diagnostics_keep_end_positions(tmp_path, monkeypatch) -> None:
+    from pcdlint.analyzer import analyze_code
+
+    _write(tmp_path, monkeypatch)
+    source = (tmp_path / "sample.py").read_text(encoding="utf-8")
+    found = analyze_code(source, "sample.py")
+    assert found, "control: expected at least one finding"
+    for d in found:
+        assert d.end_lineno is not None, d
+        assert d.end_col_offset is not None, d
+        assert (d.end_lineno, d.end_col_offset) >= (d.lineno, d.col_offset)
+
+
+def test_sarif_declares_a_default_level_per_rule(tmp_path, monkeypatch,
+                                                 capsys) -> None:
+    """A consumer filters on defaultConfiguration before any result exists."""
+    _write(tmp_path, monkeypatch)
+    data = _sarif(capsys, ["check", "sample.py", "--format", "sarif"])
+
+    rules = data["runs"][0]["tool"]["driver"]["rules"]
+    defaults = {r["id"]: r["defaultConfiguration"]["level"] for r in rules}
+    assert set(defaults) == {"PCL001", "PCL002", "PCL003", "PCL004", "PCL005"}
+    assert all(level in ("error", "warning") for level in defaults.values())
+
+    for result in data["runs"][0]["results"]:
+        assert result["level"] == defaults[result["ruleId"]], result
