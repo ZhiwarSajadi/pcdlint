@@ -21,6 +21,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Changed
 
+- PCL002 no longer claims `json.dumps()` is always non-deterministic. CPython
+  dicts keep insertion order, so the key order only varies when the dict was
+  *built* differently -- merged dicts, sets, DB rows, `**` spreads. The
+  finding and the README now say exactly that, and point at `sort_keys=True`
+  as what makes it deterministic however it was built. Still a WARNING.
 - A `# pcdlint: disable` alone on its own line now switches off **the next
   line of code** unless it sits above the first statement of the file, where
   it keeps switching off the whole file as before. It used to be file-scoped

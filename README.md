@@ -59,7 +59,7 @@ client.chat.completions.create(
 | Rule ID | Name | Severity | `--fix` | Description |
 |---------|------|----------|---------|-------------|
 | `PCL001` | `prefix-taint-injection` | ERROR | — | Dynamic value placed before static prompt text invalidates cache prefix |
-| `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True` produces non-deterministic output |
+| `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True`: key order follows how the dict was built, so two runs can disagree |
 | `PCL003` | `set-iteration-in-prompt` | ERROR | ✅ | Python's `PYTHONHASHSEED` randomizes set iteration order across processes |
 | `PCL004` | `dynamic-tools-mutation` | WARNING | — | Changing tool definition order invalidates the entire prompt cache hierarchy |
 | `PCL005` | `taint-before-cache-breakpoint` | ERROR | — | Dynamic value anywhere before an Anthropic `cache_control` breakpoint |

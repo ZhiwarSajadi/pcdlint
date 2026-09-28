@@ -450,8 +450,11 @@ class RuleEngine:
                 col_offset=node.col_offset,
                 rule_id="PCL002",
                 rule_name="unsorted-json-in-prefix",
-                message="json.dumps() called without sort_keys=True",
-                fix_suggestion="Pass 'sort_keys=True' to 'json.dumps(...)' to guarantee deterministic key serialization across requests.",
+                message="json.dumps() without sort_keys=True: dict key order "
+                        "depends on how the dict was built",
+                fix_suggestion="Pass 'sort_keys=True' to 'json.dumps(...)' to make the "
+                               "key order deterministic however the dict was built "
+                               "(merged dicts, sets, DB rows, ** spreads).",
                 severity="WARNING",
                 edits=self._pcl002_edits(node),
             )

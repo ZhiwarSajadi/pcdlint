@@ -1279,3 +1279,24 @@ def test_a_call_inside_a_function_still_sees_module_data_defined_after_it() -> N
         "p = f'{datetime.now()}' + 'STATIC RULES ' * 30\n"
     )
     assert "PCL001" in _codes(source), _codes(source)
+
+
+# --- P2-4: PCL002's wording must not overstate the risk -------------------
+
+def test_pcl002_wording_is_honest_about_dict_order() -> None:
+    """CPython dicts keep insertion order, so an unsorted dumps is only
+    non-deterministic when the dict's build order varies -- merges, sets,
+    DB rows, ** spreads. Calling it flatly non-deterministic was wrong."""
+    source = (
+        "import json\n"
+        "prompt = json.dumps(payload)\n"
+        "client.messages.create(model='m', "
+        "messages=[{'role': 'user', 'content': prompt}])\n"
+    )
+    found = [d for d in analyze_code(source, "case.py")
+             if d.rule_id == "PCL002"]
+    assert len(found) == 1, f"expected one PCL002, got {found}"
+    assert found[0].severity == "WARNING"
+    assert "depends on how the dict was built" in found[0].message, \
+        found[0].message
+    assert "sort_keys=True" in found[0].fix_suggestion
