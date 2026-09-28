@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from pcdlint import __version__, config
@@ -355,11 +356,16 @@ def _print_json(diagnostics: list) -> None:
             "file_path": d.file_path,
             "lineno": d.lineno,
             "col_offset": d.col_offset,
+            "end_lineno": d.end_lineno,
+            "end_col_offset": d.end_col_offset,
             "rule_id": d.rule_id,
             "rule_name": d.rule_name,
             "message": d.message,
             "fix_suggestion": d.fix_suggestion,
             "severity": d.severity,
+            # Whether --fix can act on it, without the caller having to
+            # reconstruct that from the edits it cannot see.
+            "fixable": bool(d.edits),
         })
     print(json.dumps(data, indent=2, sort_keys=True))
 
@@ -483,11 +489,16 @@ def _print_text(diagnostics: list) -> None:
         return
     for d in diagnostics:
         severity_color = "red" if d.severity == "ERROR" else "yellow"
+        # escape(): a path or message is data, not markup. Without it a file
+        # called `[bold]x.py` is parsed as a tag and never printed.
         console.print(
             f"[{severity_color}][{d.rule_id}] {d.rule_name}[/{severity_color}] "
-            f"[bold]{d.file_path}:{d.lineno}:{d.col_offset}[/bold] - {d.message}"
+            f"[bold]{escape(d.file_path)}:{d.lineno}:{d.col_offset}[/bold] "
+            f"- {escape(d.message)}"
         )
-        console.print(f"    [bold yellow]💡 Fix:[/bold yellow] {d.fix_suggestion}")
+        console.print(
+            f"    [bold yellow]💡 Fix:[/bold yellow] {escape(d.fix_suggestion)}"
+        )
         console.print()
     table = Table(title="Summary")
     table.add_column("Metric", style="cyan")

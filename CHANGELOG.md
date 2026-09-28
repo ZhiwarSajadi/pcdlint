@@ -21,6 +21,10 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Changed
 
+- JSON output carries `fixable` (so a consumer knows what `--fix` will touch
+  without re-running) plus `end_lineno` / `end_col_offset`. Text output
+  escapes Rich markup in the path, message and fix suggestion, so a file
+  called `[bold]x.py` prints its name instead of being parsed as a tag.
 - SARIF output is closer to what Code Scanning expects. Columns are converted
   to SARIF's own units -- ast reports UTF-8 byte offsets, SARIF defaults to
   UTF-16, so the two disagreed on every line with a non-ASCII character

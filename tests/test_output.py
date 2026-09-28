@@ -498,3 +498,37 @@ def test_sarif_declares_a_default_level_per_rule(tmp_path, monkeypatch,
 
     for result in data["runs"][0]["results"]:
         assert result["level"] == defaults[result["ruleId"]], result
+
+
+# --- P3-4: JSON and text output ------------------------------------------
+
+def test_json_output_reports_fixability_and_end_positions(tmp_path, monkeypatch,
+                                                          capsys) -> None:
+    """A consumer should not have to re-run pcdlint to learn what it can fix."""
+    _write(tmp_path, monkeypatch)
+    code, out, _err = _run_cli(
+        ["check", "sample.py", "--format", "json"], capsys)
+    assert code == 1
+
+    data = json.loads(out)
+    assert data
+    fixable = {d["rule_id"]: d["fixable"] for d in data}
+    assert fixable["PCL001"] is False, fixable
+    assert fixable["PCL002"] is True, fixable
+    for d in data:
+        assert isinstance(d["end_lineno"], int), d
+        assert isinstance(d["end_col_offset"], int), d
+
+
+def test_text_output_does_not_interpret_paths_as_markup(tmp_path, monkeypatch,
+                                                        capsys) -> None:
+    """A path containing `[bold]` was parsed as Rich markup and vanished."""
+    target = tmp_path / "[bold]x.py"
+    target.write_text(SAMPLE, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    code, out, _err = _run_cli(["check", "[bold]x.py"], capsys)
+
+    assert code == 1
+    assert "[bold]" in out, out
+    assert "[bold]x.py:3:" in out or "[bold]x.py:" in out, out
