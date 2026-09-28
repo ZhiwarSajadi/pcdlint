@@ -266,9 +266,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--exclude", action="append", metavar="GLOBS", default=None,
-        help="Glob of files to leave out of the scan, bare name or path "
-             "relative to what you passed (repeatable); overrides "
-             "[tool.pcdlint] exclude",
+        help="Glob of files to leave out of a directory scan, matching the "
+             "bare name or the path relative to what you passed "
+             "(repeatable); overrides [tool.pcdlint] exclude. A path you "
+             "name explicitly is still checked",
     )
     parser.add_argument(
         "--diff", nargs="?", const="HEAD", default=None, metavar="REF",

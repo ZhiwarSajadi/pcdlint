@@ -180,9 +180,11 @@ exclude = ["tests/*", "*.min.py"]  # never scan these at all
 
 The **nearest `pyproject.toml` above each analyzed file** is used, so a monorepo
 can give every package its own rule set. `select` is an allowlist; `ignore` is a
-denylist applied after it. `exclude` drops files before anything is analyzed —
-matched against the bare file name *and* the path relative to what you passed,
-so `"*.min.py"` and `"tests/*"` both do what they look like.
+denylist applied after it. `exclude` drops files a **directory walk** would
+pick up, before anything is analyzed — matched against the bare file name
+*and* the path relative to what you passed, so `"*.min.py"` and `"tests/*"`
+both do what they look like. A file you name on the command line is always
+checked.
 
 A folder holding a `pyvenv.cfg` is skipped, whatever it is called: `venv311/`,
 `.venv-py312/` and `.tox/py311/` are caught without needing a name on the
