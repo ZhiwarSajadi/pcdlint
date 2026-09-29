@@ -1065,19 +1065,20 @@ class TaintTracker:
         if isinstance(value, ast.List):
             buf.lists[key] = value
 
-        # 3. Set expressions
-        if isinstance(value, (ast.Set, ast.SetComp)):
+        # 3. Set expressions, including `a | b` and the other set operators
+        if isinstance(value, (ast.Set, ast.SetComp)) or (
+                isinstance(value, ast.BinOp) and self._value_is_set(value)):
             buf.sets.add(key)
             if var_name == "tools":
                 buf.tools_mutated.add(key)
-            if _elements_orderable(value):
+            if _elements_orderable(value) or self.is_orderable_set_expr(value):
                 buf.set_orderable.add(key)
             self._track_json_and_branch(var_name, value, scope, buf)
             return
 
         # 4. Calls
         if isinstance(value, ast.Call):
-            if self._is_set_call(value) or self.returns_set(value):
+            if self._value_is_set(value):
                 buf.sets.add(key)
                 if var_name == "tools":
                     buf.tools_mutated.add(key)
@@ -1493,13 +1494,17 @@ class TaintTracker:
         return None
 
     def _value_is_set(self, value: ast.AST) -> bool:
-        if isinstance(value, (ast.Set, ast.SetComp)):
-            return True
-        if isinstance(value, ast.Call):
-            return self._is_set_call(value) or self.returns_set(value)
-        if isinstance(value, ast.Name):
-            return self.is_set_variable(value.id, value)
-        return False
+        """Whether ``value`` evaluates to a set.
+
+        Separate from ``is_unsorted_set_expr`` in exactly one place: a
+        comprehension over a set is iterated in set order, so PCL003 reports
+        it, but it builds a *list* -- and _track_target_value has to keep
+        treating it as one, because step 5 decides ``tools_mutated`` for
+        list comprehensions.
+        """
+        if isinstance(value, (ast.ListComp, ast.GeneratorExp)):
+            return False
+        return self.is_unsorted_set_expr(value)
 
     def returns_set(self, node: ast.AST) -> bool:
         """True when ``node`` is a call whose callee returns a set."""
@@ -1559,14 +1564,43 @@ class TaintTracker:
         return isinstance(func, ast.Name) and func.id in self._json_dumps
 
     def is_unsorted_set_expr(self, expr: ast.AST) -> bool:
-        """True when ``expr`` is a set whose iteration order is not pinned."""
+        """True when ``expr`` is a set whose iteration order is not pinned.
+
+        A set is not only spelled ``{...}``: it can come from a helper, from
+        an operator, from ``frozenset()``, or survive inside a ``list()``,
+        ``map()`` or comprehension that copies its order without fixing it.
+        """
         if isinstance(expr, ast.Call):
-            if isinstance(expr.func, ast.Name) and expr.func.id == "sorted":
+            func = expr.func
+            if isinstance(func, ast.Name):
+                if func.id == "sorted":
+                    return False
+                if func.id in ("set", "frozenset"):
+                    return True
+                # A local helper whose summary says it hands back a set.
+                summary, _bound = self._callee_summary(expr)
+                if summary and summary.is_set:
+                    return True
+                # list()/tuple()/map() copy a set's order, they do not fix it.
+                if func.id in ("list", "tuple", "map") and expr.args:
+                    index = 1 if func.id == "map" else 0
+                    if index < len(expr.args):
+                        return self.is_unsorted_set_expr(expr.args[index])
                 return False
-            if isinstance(expr.func, ast.Name) and expr.func.id == "set":
-                return True
+            if isinstance(func, ast.Attribute):
+                if func.attr in ("union", "intersection", "difference",
+                                 "symmetric_difference"):
+                    return self.is_unsorted_set_expr(func.value)
+                return False
         if isinstance(expr, ast.Name):
             return self.is_set_variable(expr.id, expr)
+        if isinstance(expr, ast.BinOp) and isinstance(
+                expr.op, (ast.BitOr, ast.BitAnd, ast.Sub, ast.BitXor)):
+            return (self.is_unsorted_set_expr(expr.left)
+                    or self.is_unsorted_set_expr(expr.right))
+        if isinstance(expr, (ast.ListComp, ast.GeneratorExp)):
+            return bool(expr.generators) and self.is_unsorted_set_expr(
+                expr.generators[0].iter)
         return isinstance(expr, (ast.Set, ast.SetComp))
 
     def get_prefix_tainted(self, node: ast.AST) -> TaintOrigin | None:
@@ -1653,12 +1687,31 @@ class TaintTracker:
 
         This is the gate on the PCL003 autofix: reporting the finding is
         always right, shipping ``sorted(...)`` is not, unless the elements
-        are visible and mutually comparable.
+        are visible and mutually comparable. Each shape below is provable
+        by asking the same question of what it was built from; a helper's
+        return value is not, so it answers False and the finding stands
+        with no edit.
         """
         if isinstance(node, ast.Set):
             return _elements_orderable(node)
         if isinstance(node, ast.Name):
             return self._has(self._b.set_orderable, node.id, node)
+        if isinstance(node, ast.BinOp) and isinstance(
+                node.op, (ast.BitOr, ast.BitAnd, ast.Sub, ast.BitXor)):
+            return (self.is_orderable_set_expr(node.left)
+                    and self.is_orderable_set_expr(node.right))
+        if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+            return bool(node.generators) and self.is_orderable_set_expr(
+                node.generators[0].iter)
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and node.args and func.id in (
+                    "set", "frozenset", "list", "tuple"):
+                return self.is_orderable_set_expr(node.args[0])
+            if isinstance(func, ast.Attribute) and func.attr in (
+                    "union", "intersection", "difference",
+                    "symmetric_difference"):
+                return self.is_orderable_set_expr(func.value)
         return False
 
     def is_tools_mutated(self, var_name: str, node: ast.AST | None = None) -> bool:

@@ -2164,6 +2164,65 @@ def test_r16e_method_summaries_do_not_leak_between_classes() -> None:
     '''
     assert _codes(source) == ["PCL001"], _codes(source)
 
+def _r17(source: str) -> list:
+    """PCL003 diagnostics for a dedented fixture."""
+    return [d for d in analyze_code(textwrap.dedent(source), "case.py")
+            if d.rule_id == "PCL003"]
+
+_R17_SINK = '''        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+'''
+
+def test_r17_local_function_returning_a_set_is_reported() -> None:
+    """`returns_set` already feeds PCL004's summary; PCL003 never asked."""
+    found = _r17('''
+        def tags():
+            return {"a", "b"}
+        system = STATIC_RULES + ", ".join(tags())
+''' + _R17_SINK)
+    assert found, "a helper returning a set was iterated unsorted"
+    # Elements are not visible at the call site, so --fix must decline
+    # rather than wrap something whose order it cannot prove.
+    assert found[0].edits == (), found[0].edits
+
+def test_r17_set_operators_are_reported() -> None:
+    found = _r17('''
+        left = {"a", "b"}
+        right = {"c"}
+        system = STATIC_RULES + ", ".join(left | right)
+''' + _R17_SINK)
+    assert found, "a set union was iterated unsorted"
+
+def test_r17_frozenset_is_reported() -> None:
+    found = _r17('''
+        system = STATIC_RULES + ", ".join(frozenset({"a", "b"}))
+''' + _R17_SINK)
+    assert found, "a frozenset was iterated unsorted"
+
+def test_r17_list_over_a_set_is_reported() -> None:
+    found = _r17('''
+        tags = {"a", "b"}
+        system = STATIC_RULES + ", ".join(list(tags))
+''' + _R17_SINK)
+    assert found, "list(tags) keeps the set's order"
+
+def test_r17_comprehension_over_a_set_is_reported() -> None:
+    found = _r17('''
+        tags = {"a", "b"}
+        system = STATIC_RULES + ", ".join(t for t in tags)
+''' + _R17_SINK)
+    assert found, "a generator over a set keeps the set's order"
+
+def test_r17_control_sorted_and_plain_lists_report_nothing() -> None:
+    assert _r17('''
+        tags = {"a", "b"}
+        system = STATIC_RULES + ", ".join(sorted(tags))
+''' + _R17_SINK) == []
+    assert _r17('''
+        names = ["a", "b"]
+        system = STATIC_RULES + ", ".join(names)
+''' + _R17_SINK) == []
+
 def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     source = '''
         import asyncio
