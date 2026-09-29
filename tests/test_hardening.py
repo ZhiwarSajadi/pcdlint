@@ -1458,6 +1458,111 @@ def test_setup_sh_reports_failures_instead_of_masking_them() -> None:
     assert "if errorlevel 2" in bat, bat
 
 
+# --- R-18: sources, sinks and their configuration ------------------------
+
+_R18_STD = ("import secrets, random, time, socket, platform, getpass\n")
+
+def test_r18_missing_taint_sources_are_recognised() -> None:
+    """Each of these is nondeterministic and none was in TAINT_SOURCES.
+    Verified against the installed module before adding it."""
+    calls = [
+        "secrets.choice(pool)", "secrets.randbelow(10)",
+        "random.randbytes(8)", "random.gauss(0.0, 1.0)",
+        "time.process_time()", "time.thread_time()",
+        "socket.gethostname()", "platform.node()", "getpass.getuser()",
+    ]
+    for call in calls:
+        source = (
+            _R18_STD
+            + 'system = f"' + "{ " + call + " }" + "\\n{STATIC_RULES}" + '"\n'
+            + 'client.messages.create(model="m", max_tokens=1, '
+              "system=system, messages=[])\n"
+        )
+        assert "PCL001" in _codes(source), f"{call} was not recognised"
+
+def test_r18_seeded_random_is_not_a_taint_source() -> None:
+    """`self.random.choice(...)` on a seeded random.Random is not
+    random.choice: the suffix matched, but nothing in the file says the
+    prefix is the module.
+
+    The call has to be bound and used in the same scope -- routing it
+    through a method's return value hides it behind a summary lookup that
+    never resolves, which makes the test pass without testing anything.
+    """
+    source = '''
+        import random
+        class Holder:
+            def __init__(self):
+                self.random = random.Random(0)
+            def pick(self):
+                chosen = self.random.choice(["a"])
+                system = f"{chosen}\\n{STATIC_RULES}"
+                client.messages.create(model="m", max_tokens=1,
+                    system=system, messages=[])
+        Holder().pick()
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
+
+def test_r18_module_random_is_still_a_taint_source() -> None:
+    """Control: the same method reached through the module still reports."""
+    source = '''
+        import random
+        system = f"{random.choice(['a'])}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r18_legacy_prompt_kwarg_is_read_as_payload() -> None:
+    """Anthropic's old completions API takes `prompt=`, which neither
+    `_get_system_arg` nor `_get_messages_arg` looked at."""
+    source = '''
+        from datetime import datetime
+        client.completions.create(model="m",
+            prompt=f"{datetime.now()} {STATIC_RULES}")
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r18_litellm_completion_is_a_sink() -> None:
+    source = '''
+        from datetime import datetime
+        litellm.completion(model="m",
+            prompt=f"{datetime.now()} {STATIC_RULES}")
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r18_config_accepts_extra_sources_and_sinks(tmp_path, monkeypatch) -> None:
+    """`[tool.pcdlint] taint-sources` / `sinks` let a project name the
+    calls this linter cannot know about."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pcdlint]\n"
+        'taint-sources = ["mypkg.jitter"]\n'
+        'sinks = ["mywrapper.ask"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "case.py").write_text(
+        "from datetime import datetime\n"
+        'system = f"{mypkg.jitter()} {STATIC_RULES}"\n'
+        "mywrapper.ask(model=\"m\", system=system)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert _run_cli("check", ".") == 1
+
+def test_r18_unknown_config_key_names_every_valid_one(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pcdlint]\nbogus = []\n", encoding="utf-8")
+
+    from pcdlint import config
+
+    with pytest.raises(config.ConfigError) as exc:
+        config.load_for(str(tmp_path / "pyproject.toml"))
+    message = str(exc.value)
+    for key in ("select", "ignore", "exclude", "taint-sources", "sinks"):
+        assert key in message, f"{key} missing from: {message}"
+
+
 # --- R-24: non-LLM Python must stay completely quiet ---------------------
 
 def test_non_llm_python_produces_no_findings() -> None:

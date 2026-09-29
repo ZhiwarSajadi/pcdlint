@@ -7,7 +7,9 @@ every package its own rule set.
 A broken or surprising config is an error (exit 2), never a silent fallback
 to defaults: ``select = ["PCL999"]`` must not make the run look clean.
 
-The keys are ``select``, ``ignore`` and ``exclude``.
+The keys are ``select``, ``ignore``, ``exclude``, ``taint-sources`` and
+``sinks`` -- the last two naming dotted calls this project knows about and
+the built-in tables cannot.
 """
 
 import sys
@@ -23,7 +25,7 @@ else:  # Python 3.10 has no tomllib; tomli is its backport.
     import tomli as tomllib
 
 _SECTION = "tool.pcdlint"
-_KEYS = frozenset({"select", "ignore", "exclude"})
+_KEYS = frozenset({"select", "ignore", "exclude", "taint-sources", "sinks"})
 
 
 class ConfigError(Exception):
@@ -39,6 +41,11 @@ class Config:
     ignore: frozenset = field(default_factory=frozenset)
     # Globs for files this project does not want scanned at all.
     exclude: frozenset = field(default_factory=frozenset)
+    # Dotted call names this project knows are nondeterministic (or are LLM
+    # entry points) that the built-in tables cannot: `mypkg.jitter`,
+    # `mywrapper.ask`. Both are taken at the project's word.
+    taint_sources: frozenset = field(default_factory=frozenset)
+    sinks: frozenset = field(default_factory=frozenset)
 
 
 DEFAULT = Config()
@@ -83,6 +90,28 @@ def _globs(value: object, key: str, path: Path) -> frozenset:
     return frozenset(pattern for pattern in value if pattern.strip())
 
 
+def _dotted_names(value: object, key: str, path: Path) -> frozenset:
+    """Validate a list of dotted call names.
+
+    A typo here would silently never match, which reads as "pcdlint says
+    my code is fine" -- the failure exit 2 exists to prevent, so an entry
+    that is not a dotted name is an error rather than a dead entry.
+    """
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ConfigError(
+            f"{_SECTION} {key} in {path} must be a list of dotted names, "
+            f"got {value!r}"
+        )
+    names = frozenset(v.strip() for v in value if v.strip())
+    for name in sorted(names):
+        if not all(part.isidentifier() for part in name.split(".")):
+            raise ConfigError(
+                f"{_SECTION} {key} in {path} names {name!r}, which is not a "
+                f"dotted name like 'mypkg.jitter'"
+            )
+    return names
+
+
 def _load(path: Path) -> tuple[Config | None, bool]:
     """Parse one pyproject.toml; ``(config, found)`` with found=False when it
     declares no [tool.pcdlint] section."""
@@ -107,7 +136,7 @@ def _load(path: Path) -> tuple[Config | None, bool]:
     if unknown:
         raise ConfigError(
             f"unknown key(s) in [{_SECTION}] ({path}): {', '.join(unknown)}; "
-            f"expected select, ignore or exclude"
+            f"expected {', '.join(sorted(_KEYS))}"
         )
 
     select = _rule_ids(section["select"], "select", path) if "select" in section else None
@@ -115,7 +144,12 @@ def _load(path: Path) -> tuple[Config | None, bool]:
               if "ignore" in section else frozenset())
     exclude = (_globs(section["exclude"], "exclude", path)
                if "exclude" in section else frozenset())
-    return Config(select=select, ignore=ignore, exclude=exclude), True
+    sources = (_dotted_names(section["taint-sources"], "taint-sources", path)
+               if "taint-sources" in section else frozenset())
+    sinks = (_dotted_names(section["sinks"], "sinks", path)
+             if "sinks" in section else frozenset())
+    return Config(select=select, ignore=ignore, exclude=exclude,
+                  taint_sources=sources, sinks=sinks), True
 
 
 @cache

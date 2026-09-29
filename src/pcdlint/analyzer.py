@@ -91,7 +91,8 @@ def _relative_to(path: Path, root: Path) -> str:
         return path.name
 
 
-def _sink_calls(tree: ast.AST) -> dict[int, list[int]]:
+def _sink_calls(tree: ast.AST, extra_sinks: frozenset = frozenset()
+                ) -> dict[int, list[int]]:
     """Statement id -> ids of the LLM calls inside it worth snapshotting.
 
     Only statements that run at module level are recorded. A call inside a
@@ -108,22 +109,28 @@ def _sink_calls(tree: ast.AST) -> dict[int, list[int]]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             nested = True
         if (not nested and stmt_id is not None
-                and isinstance(node, ast.Call) and is_llm_api_call(node)):
+                and isinstance(node, ast.Call)
+                and is_llm_api_call(node, extra_sinks)):
             out.setdefault(stmt_id, []).append(id(node))
         for child in ast.iter_child_nodes(node):
             stack.append((child, stmt_id, nested))
     return out
 
 
-def _track_tree(tracker: TaintTracker, tree: ast.AST) -> None:
+def _track_tree(tracker: TaintTracker, tree: ast.AST,
+                extra_sinks: frozenset = frozenset()) -> None:
     """Walk statements in execution order, merging sibling control-flow paths.
 
     Python executes one arm of a branch, never both. Tracking each arm from
     the same snapshot and may-merging the results is what keeps a taint
     recorded on the ``try`` path from being erased by its handler, and what
     lets two arms that bind the same expression be recognised as equal.
+
+    ``extra_sinks`` are the names ``[tool.pcdlint] sinks`` added: a snapshot
+    has to honour them exactly as the rules do, or a configured sink would
+    be judged against state taken at the wrong moment.
     """
-    tracker.set_sink_calls(_sink_calls(tree))
+    tracker.set_sink_calls(_sink_calls(tree, extra_sinks))
     for pass_no in range(_MAX_PASSES):
         _walk_stmts(tracker, _child_stmts(tree), pass_no)
         if not tracker.build_function_returns(tree):
@@ -281,11 +288,11 @@ def analyze_code_ex(source_code: str, file_path: str = "", *,
         return [], str(exc)
 
     try:
-        tracker = TaintTracker()
+        tracker = TaintTracker(cfg.taint_sources)
         tracker.build_scopes(tree)
-        _track_tree(tracker, tree)
+        _track_tree(tracker, tree, cfg.sinks)
 
-        engine = RuleEngine(tracker)
+        engine = RuleEngine(tracker, cfg.sinks)
         found = engine.run(tree, file_path)
     except RecursionError:
         # Exit 1 means "findings", so a crash escaping as 1 would make CI

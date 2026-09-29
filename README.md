@@ -180,6 +180,8 @@ Rules can be turned on and off from `pyproject.toml` or the command line:
 select = ["PCL001", "PCL003"]   # run only these rules
 ignore = ["PCL002"]             # skip these, applied after select
 exclude = ["tests/*", "*.min.py"]  # never scan these at all
+taint-sources = ["mypkg.jitter"]    # calls you know are nondeterministic
+sinks = ["mywrapper.ask"]           # calls that take a prompt
 ```
 
 The **nearest `pyproject.toml` above each analyzed file** is used, so a monorepo
@@ -189,6 +191,14 @@ pick up, before anything is analyzed — matched against the bare file name
 *and* the path relative to what you passed, so `"*.min.py"` and `"tests/*"`
 both do what they look like. A file you name on the command line is always
 checked.
+
+`taint-sources` and `sinks` are the escape hatch for calls this linter
+cannot know about: the first names qualified calls that are
+nondeterministic (`mypkg.jitter()` taints like `uuid.uuid4()`), the second
+names qualified calls that take a prompt, so everything inside one is
+judged as payload. Both are taken at your word — a name is matched exactly
+or on a dot boundary, and nothing else about the call has to look like an
+LLM API. A typo is an error rather than a rule that silently never fires.
 
 A folder holding a `pyvenv.cfg` is skipped, whatever it is called: `venv311/`,
 `.venv-py312/` and `.tox/py311/` are caught without needing a name on the

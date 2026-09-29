@@ -10,7 +10,7 @@ import ast
 from collections.abc import Sequence
 
 from pcdlint.models import Diagnostic, TaintOrigin, TextEdit
-from pcdlint.taint import TaintTracker
+from pcdlint.taint import TaintTracker, _extract_dotted_name
 
 # Substrings that mark an assignment target as prompt/LLM-prefix material.
 PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "context")
@@ -30,6 +30,11 @@ _SINK_RESOURCES = frozenset({"completions", "messages", "responses"})
 _LLM_SHAPE_KEYWORDS = frozenset({
     "model", "messages", "input", "system", "instructions", "prompt", "tools",
 })
+
+# Complete call names that are entry points without the resource/method shape
+# above: ``litellm.completion(...)`` is a bare function, so its parts are
+# ["completion", "litellm"] and there is no resource to name.
+_EXTRA_SINK_NAMES = frozenset({"litellm.completion", "litellm.acompletion"})
 
 # SDK packages whose import alone says this file writes prompts. Used only to
 # decide whether a prompt-shaped *name* means anything; a name that reaches a
@@ -76,7 +81,7 @@ def call_parts(node: ast.Call) -> list[str]:
     return parts
 
 
-def is_llm_api_call(node: ast.Call) -> bool:
+def is_llm_api_call(node: ast.Call, extra_sinks: frozenset = frozenset()) -> bool:
     """True for a documented Anthropic or OpenAI entry point.
 
     Both halves of the path must match exactly. Substring matching used to
@@ -90,8 +95,20 @@ def is_llm_api_call(node: ast.Call) -> bool:
     no keywords at all. This only ever narrows what counts as a sink; there
     is deliberately no fallback that accepts a bare ``messages=`` plus
     ``model=`` pair, because that is what any local ``def render(messages,
-    model)`` looks like. A bespoke wrapper is a name this linter cannot know.
+    model)`` looks like.
+
+    Two escapes from the shape rule: complete call names, where the path is
+    a bare function rather than ``resource.method`` (``litellm.completion``),
+    and whatever ``[tool.pcdlint] sinks`` names -- an explicit request from
+    the project, so it is taken at its word rather than asked to look like
+    an LLM call too.
     """
+    # The complete path, receiver included: `litellm.completion` is one
+    # attribute, so call_parts -- which reports only the attribute names --
+    # would give a single part and the shape rule below could never apply.
+    dotted = _extract_dotted_name(node.func)
+    if dotted in _EXTRA_SINK_NAMES or dotted in extra_sinks:
+        return True
     parts = call_parts(node)
     if len(parts) < 2 or parts[0] not in _SINK_METHODS \
             or parts[1] not in _SINK_RESOURCES:
@@ -176,8 +193,11 @@ def _replace(node: ast.expr, text: str) -> TextEdit | None:
 class RuleEngine:
     """Applies every rule against analyzed code, in source order."""
 
-    def __init__(self, tracker: TaintTracker) -> None:
+    def __init__(self, tracker: TaintTracker,
+                 extra_sinks: frozenset = frozenset()) -> None:
         self.tracker = tracker
+        # Extra sinks come from [tool.pcdlint] sinks; see is_llm_api_call.
+        self._extra_sinks = extra_sinks
         self._diagnostics: list[Diagnostic] = []
         self._file_path: str = ""
         self._llm_used_vars: set = set()
@@ -279,9 +299,8 @@ class RuleEngine:
         self._check_pcl003(node)
         self._check_pcl004(node)
 
-    @staticmethod
-    def _is_llm_api_call(node: ast.Call) -> bool:
-        return is_llm_api_call(node)
+    def _is_llm_api_call(self, node: ast.Call) -> bool:
+        return is_llm_api_call(node, self._extra_sinks)
 
     @staticmethod
     def _is_anthropic_sink(node: ast.Call) -> bool:
@@ -309,7 +328,9 @@ class RuleEngine:
         return self._keyword_node(node, "instructions")
 
     def _get_messages_arg(self, node: ast.Call) -> ast.AST | None:
-        for name in ("messages", "input"):
+        # `prompt=` is Anthropic's legacy completions spelling of the same
+        # thing; without it that call's payload was never looked at.
+        for name in ("messages", "input", "prompt"):
             value = self._keyword_node(node, name)
             if value is not None:
                 return value

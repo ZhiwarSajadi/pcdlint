@@ -50,6 +50,18 @@ TAINT_SOURCES: dict[tuple, str] = {
     ("secrets", "token_bytes"): "secrets.token_bytes",
     ("os", "urandom"): "os.urandom",
     ("os", "getpid"): "os.getpid",
+    # Verified against the installed module before being added; anything
+    # that could not be verified here belongs in [tool.pcdlint]
+    # taint-sources instead of being guessed at.
+    ("secrets", "choice"): "secrets.choice",
+    ("secrets", "randbelow"): "secrets.randbelow",
+    ("random", "randbytes"): "random.randbytes",
+    ("random", "gauss"): "random.gauss",
+    ("time", "process_time"): "time.process_time",
+    ("time", "thread_time"): "time.thread_time",
+    ("socket", "gethostname"): "socket.gethostname",
+    ("platform", "node"): "platform.node",
+    ("getpass", "getuser"): "getpass.getuser",
     # django.utils.timezone.now, reached through `from django.utils import
     # timezone` (which the import table expands) or written out in full.
     ("timezone", "now"): "timezone.now",
@@ -397,7 +409,12 @@ class _Bindings:
 class TaintTracker:
     """Tracks tainted variables and static prefix solids across an AST."""
 
-    def __init__(self) -> None:
+    def __init__(self, extra_sources: Iterable[str] = ()) -> None:
+        # Built-ins first, then whatever [tool.pcdlint] taint-sources named.
+        # A tuple rather than a dict: matching never needs the key, only the
+        # qualified call name, and duplicates cost one skipped entry.
+        self._sources: tuple[str, ...] = tuple(dict.fromkeys(
+            (*TAINT_SOURCES.values(), *extra_sources)))
         self._node_scope: dict[int, Scope] = {}
         # Class each node sits in, so `self.x` can be keyed by the class
         # rather than by the method that happened to write it.
@@ -661,19 +678,32 @@ class TaintTracker:
             return ".".join(parts)
         return ".".join([base, *parts[1:]])
 
-    @staticmethod
-    def _matched_source(name: str) -> str | None:
-        """TAINT_SOURCES entry that ``name`` spells, or None.
+    def _matched_source(self, name: str) -> str | None:
+        """Source name that ``name`` spells -- built-in or configured -- or None.
 
         Matching is exact or on a dot boundary, never a substring: that is
         what keeps ``event.time`` from matching ``time.time`` while letting
         ``datetime.date.today`` match ``date.today``.
+
+        A *suffix* match additionally needs an imported prefix. ``self.random
+        .choice(...)`` on a seeded ``random.Random`` ends the same way as
+        ``random.choice``, and nothing in that file says the prefix is the
+        module; ``datetime.date.today`` only gets there through a line that
+        said ``import datetime`` (or ``from datetime import date``, whose
+        qualified name still starts with the module). An exact match needs
+        no such evidence -- it is the spelling the table names.
         """
         if not name:
             return None
-        for full in TAINT_SOURCES.values():
-            if name == full or name.endswith("." + full):
+        for full in self._sources:
+            if name == full:
                 return full
+            if name.endswith("." + full):
+                head = name[: -(len(full) + 1)].split(".", 1)[0]
+                if head in self._imports or any(
+                        qualified.split(".", 1)[0] == head
+                        for qualified in self._imports.values()):
+                    return full
         return None
 
     def _value_is_stringy(self, node: ast.AST) -> bool:

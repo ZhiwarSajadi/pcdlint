@@ -8,6 +8,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Added
 
+- `[tool.pcdlint] taint-sources` and `sinks`, for the calls this linter
+  cannot know about. `taint-sources` names qualified calls that are
+  nondeterministic, so `mypkg.jitter()` taints like `uuid.uuid4()`;
+  `sinks` names qualified calls that take a prompt, so every argument
+  inside one is judged as payload. Both are taken at the project's word —
+  matched exactly or on a dot boundary, with no requirement that the call
+  also look like an LLM API. A name that is not a dotted name is an error
+  rather than a rule that silently never fires.
 - `PCL005 taint-before-cache-breakpoint` (ERROR). OpenAI caches the longest
   matching prefix, so a dynamic value at the end still earns partial hits and
   `PCL001`'s "static first" test is enough. Anthropic only hits when every
@@ -100,6 +108,28 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Nine nondeterministic calls are now recognised as taint sources:
+  `secrets.choice`, `secrets.randbelow`, `random.randbytes`,
+  `random.gauss`, `time.process_time`, `time.thread_time`,
+  `socket.gethostname`, `platform.node` and `getpass.getuser`. Each was
+  verified against the installed module before being added; `arrow`,
+  `pendulum` and `numpy.random` were not available here to verify, and
+  rather than guess at their dotted names the new `taint-sources` key
+  covers them.
+- A suffix match against a source name now needs an imported prefix.
+  `self.random.choice(...)` on a seeded `random.Random` ends exactly like
+  `random.choice` and was reported as nondeterministic, while
+  `datetime.date.today` only ever gets there through a line that said
+  `import datetime`. Exact matches are unchanged — that is the spelling
+  the table names. A local object named `time` whose `.time()` is called
+  still matches, and remains a documented limitation.
+- `prompt=` is read as the payload of a call. Anthropic's legacy
+  completions API spells its input that way, and neither the system nor
+  the messages lookup looked at it, so `completions.create(prompt=...)`
+  was a sink whose payload was never judged.
+- `litellm.completion` and `litellm.acompletion` are sinks. They are bare
+  functions rather than `resource.method`, so the shape rule could not
+  see them at all.
 - Added the false-positive regression sweep: a deterministic sample of
   ~100 standard-library files must produce zero findings, zero analysis
   errors and zero crashes. The full stdlib (721 files) was measured clean
