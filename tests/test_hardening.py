@@ -1790,3 +1790,27 @@ def test_r11_overlapping_paths_report_each_finding_once(tmp_path, monkeypatch,
     keys = [(d["file_path"], d["lineno"], d["col_offset"], d["rule_id"])
             for d in found]
     assert len(keys) == len(set(keys)), keys
+
+
+# --- R-12: the linted file's own warnings are not our output -------------
+
+def test_r12_syntax_warnings_from_the_linted_file_do_not_reach_stderr(
+        tmp_path) -> None:
+    """`re.compile("\\d+")` makes ast.parse emit a SyntaxWarning about the
+    user's code, so a normal run printed a warning on stderr that has
+    nothing to do with pcdlint."""
+    import subprocess
+    import sys as _sys
+
+    target = tmp_path / "warned.py"
+    target.write_text('import re\npattern = re.compile("\\d+")\n',
+                      encoding="utf-8")
+
+    proc = subprocess.run(
+        [_sys.executable, "-m", "pcdlint.cli", "check", str(target)],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+
+    assert proc.returncode in (0, 1), proc.stderr
+    assert "SyntaxWarning" not in proc.stderr, proc.stderr
+    assert proc.stderr.strip() == "", proc.stderr

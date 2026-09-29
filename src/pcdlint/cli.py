@@ -5,6 +5,7 @@ import ast
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -101,7 +102,11 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
         if fixed == source:
             continue
         try:
-            ast.parse(fixed, filename=str(path))
+            with warnings.catch_warnings():
+                # Same reason as the analyzer: the file's own warnings are
+                # not this tool's output.
+                warnings.simplefilter("ignore", SyntaxWarning)
+                ast.parse(fixed, filename=str(path))
         except SyntaxError:
             errors.append(f"autofix for {path} produced invalid syntax; "
                           f"file left unchanged")

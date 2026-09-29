@@ -2,6 +2,7 @@
 
 import ast
 import os
+import warnings
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import cast
@@ -263,7 +264,12 @@ def analyze_code_ex(source_code: str, file_path: str = "", *,
     nearest ``[tool.pcdlint]`` instead, so the flags override config per option.
     """
     try:
-        tree = ast.parse(source_code, filename=file_path)
+        with warnings.catch_warnings():
+            # The linted file's own invalid escapes are its author's
+            # business. Unfiltered they reach stderr as a SyntaxWarning, so
+            # a normal run prints a warning that has nothing to do with us.
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source_code, filename=file_path)
     except SyntaxError as exc:
         where = file_path or "<source>"
         line = f"line {exc.lineno}" if exc.lineno else "unknown line"

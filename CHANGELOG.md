@@ -100,6 +100,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- The linted file's own `SyntaxWarning`s no longer reach stderr. `ast.parse`
+  warns about an invalid escape such as `re.compile("\d+")`, so an ordinary
+  run printed a warning about the user's code that had nothing to do with
+  pcdlint. Both `ast.parse` sites — the analyzer and the post-`--fix`
+  syntax guard — filter it.
 - Overlapping paths no longer double-report. `pcdlint check app app/mod.py`
   analysed the same file twice and printed the same finding twice, so every
   count a consumer read — the JSON array length, the SARIF results, the
