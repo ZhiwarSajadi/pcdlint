@@ -2003,6 +2003,39 @@ def test_r16c_named_expression_without_taint_reports_nothing() -> None:
             messages=[])
     '''
     assert "PCL001" not in _codes(source), _codes(source)
+
+def test_r16i_subscript_into_a_tainted_dict_carries_taint() -> None:
+    """The key does not make the value constant: `ctx['t']` is whatever was
+    put in `ctx['t']`."""
+    source = '''
+        from datetime import datetime
+        ctx = {"t": datetime.now()}
+        system = f"Time: {ctx['t']}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16i_subscript_into_a_static_dict_reports_nothing() -> None:
+    source = '''
+        ctx = {"t": STATIC_RULES}
+        system = f"Time: {ctx['t']}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
+
+def test_r16i_subscript_of_a_static_key_in_a_mixed_dict_reports_nothing() -> None:
+    """Precision: `ctx['static']` does not go dynamic because some other
+    key in the same dict holds the time."""
+    source = '''
+        from datetime import datetime
+        ctx = {"static": STATIC_RULES, "t": datetime.now()}
+        system = f"Time: {ctx['static']}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
     source = '''
         import time
         rid = int(time.time())

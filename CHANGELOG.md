@@ -110,6 +110,11 @@ All notable changes to pcdlint are documented here. The format follows
     `"Time: %s" % datetime.now()` spelling.
   - `system=(s := f"...")` — `ast.NamedExpr` was not unwrapped, so a walrus
     hid whatever it wrapped.
+  - `f"{ctx['t']}"` for `ctx = {"t": datetime.now()}` — `ast.Subscript` had
+    no branch, so looking a value up by key lost it. A literal key against
+    a literal dict resolves exactly, so `ctx['static']` in a dict that also
+    holds the time stays static; a computed key or a `**` merge asks about
+    every value instead.
 - `PCL005` now sees Anthropic's automatic caching. A single `cache_control`
   field at the top level of the request applies the breakpoint to the last
   cacheable block, but the rule only looked for `cache_control` *inside*

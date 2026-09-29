@@ -738,10 +738,40 @@ class TaintTracker:
                 parts.append(current)
         return parts
 
+    def _subscript_origin(self, node: ast.Subscript) -> TaintOrigin | None:
+        """Taint behind ``base[key]``.
+
+        The key does not make the value constant. When the slice is a
+        literal and the dict has no ``**``, the lookup is exact -- so a
+        dict holding the time under one key does not make every other key
+        dynamic. Anything else (a computed key, a ``**`` merge we cannot
+        see into) falls back to asking about every value.
+        """
+        origin = self.get_taint_origin_of_node(node.value)
+        if origin:
+            return origin
+        resolved = self.resolve_dict(node.value)
+        if resolved is None:
+            return None
+        has_spread = any(key is None for key in resolved.keys)
+        if not has_spread and isinstance(node.slice, ast.Constant):
+            wanted = node.slice.value
+            values = [value for key, value in zip(resolved.keys, resolved.values)
+                      if isinstance(key, ast.Constant) and key.value == wanted]
+        else:
+            values = list(resolved.values)
+        for value in values:
+            origin = self.get_taint_origin_of_node(value)
+            if origin:
+                return origin
+        return None
+
     def get_taint_origin_of_node(self, node: ast.AST) -> TaintOrigin | None:
         """Resolve TaintOrigin from an AST node if it contains taint."""
         if isinstance(node, (ast.Await, ast.NamedExpr)):
             return self.get_taint_origin_of_node(node.value)
+        if isinstance(node, ast.Subscript):
+            return self._subscript_origin(node)
         if isinstance(node, ast.FormattedValue):
             return self.get_taint_origin_of_node(node.value)
         if isinstance(node, ast.IfExp):
@@ -1413,6 +1443,8 @@ class TaintTracker:
         """Check if an AST expression is prefix-tainted and return its TaintOrigin."""
         if isinstance(node, (ast.Await, ast.NamedExpr)):
             return self.get_prefix_tainted(node.value)
+        if isinstance(node, ast.Subscript):
+            return self._subscript_origin(node)
         if isinstance(node, ast.Name):
             origin = self._get(self._b.prefix_tainted, node.id, node)
             return origin if origin else None
