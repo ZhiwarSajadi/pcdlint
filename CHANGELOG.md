@@ -100,6 +100,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Overlapping paths no longer double-report. `pcdlint check app app/mod.py`
+  analysed the same file twice and printed the same finding twice, so every
+  count a consumer read — the JSON array length, the SARIF results, the
+  summary table — was inflated. Findings are now keyed on a normalized,
+  case-folded path plus line, column and rule.
 - A directory named `env` is no longer skipped silently. It is a common
   name for application code, and dropping it cost findings with no message
   explaining why. Real virtualenvs are already caught by the `pyvenv.cfg`

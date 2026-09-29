@@ -1769,3 +1769,24 @@ def test_r10_build_and_dist_stay_skipped(tmp_path, monkeypatch, capsys) -> None:
     by finding your source silently absent from a run."""
     assert "mod.py" not in _r10_walk(tmp_path, monkeypatch, capsys, "build")
     assert "mod.py" not in _r10_walk(tmp_path, monkeypatch, capsys, "dist")
+
+
+# --- R-11: overlapping paths must not double-report ----------------------
+
+def test_r11_overlapping_paths_report_each_finding_once(tmp_path, monkeypatch,
+                                                        capsys) -> None:
+    """`check app app/mod.py` analysed the same file twice and printed the
+    same finding twice -- which doubles every count a consumer reads."""
+    import json
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "mod.py").write_text(_R08_BUG, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    code = _run_cli("check", "app", "app/mod.py", "--format", "json")
+
+    assert code == 1
+    found = json.loads(capsys.readouterr().out)
+    keys = [(d["file_path"], d["lineno"], d["col_offset"], d["rule_id"])
+            for d in found]
+    assert len(keys) == len(set(keys)), keys

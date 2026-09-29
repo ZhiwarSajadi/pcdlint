@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +35,14 @@ def _parse_excludes(values: list[str] | None) -> frozenset | None:
 def _analyze_paths(paths: list, select: frozenset | None,
                    ignore: frozenset | None,
                    exclude: frozenset | None = None) -> tuple[list, list[str]]:
-    """Analyze every path, keeping diagnostics and blocking errors apart."""
+    """Analyze every path, keeping diagnostics and blocking errors apart.
+
+    Overlapping paths are legal -- ``check app app/mod.py`` -- but the report
+    must not repeat: every consumer counts what it is handed, and the same
+    finding twice is a count that lies. The key is normalized so `app/mod.py`
+    and `./app/mod.py` collapse, and case-folded because Windows will accept
+    either spelling of the same file.
+    """
     diagnostics: list = []
     errors: list[str] = []
     for path_str in paths:
@@ -42,7 +50,16 @@ def _analyze_paths(paths: list, select: frozenset | None,
                                              ignore=ignore, exclude=exclude)
         diagnostics.extend(found)
         errors.extend(path_errors)
-    return diagnostics, errors
+
+    seen: set = set()
+    unique: list = []
+    for d in diagnostics:
+        key = (os.path.normcase(os.path.normpath(d.file_path)),
+               d.lineno, d.col_offset, d.rule_id)
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
+    return unique, errors
 
 
 def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
