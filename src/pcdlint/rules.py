@@ -436,7 +436,14 @@ class RuleEngine:
             if self._has_cache_control(carrier):
                 last_breakpoint = index
         if last_breakpoint < 0:
-            return
+            if not self._request_level_cache_control(node):
+                return
+            # Automatic caching: one `cache_control` on the request applies
+            # the breakpoint to the last cacheable block, so nothing in
+            # system or messages is exempt from taint before it.
+            last_breakpoint = len(units) - 1
+            if last_breakpoint < 0:
+                return
         for values, _carrier in units[:last_breakpoint + 1]:
             for value in values:
                 origin = self.tracker.get_taint_origin_of_node(value)
@@ -457,6 +464,16 @@ class RuleEngine:
                     end=_end_of(value, node),
                 )
                 return
+
+    @staticmethod
+    def _request_level_cache_control(node: ast.Call) -> bool:
+        """A ``cache_control`` on the request itself, not on a block.
+
+        This is Anthropic's automatic caching. Its name never appears as a
+        string constant inside the call -- it is a keyword -- so the
+        walk-based ``_has_cache_control`` cannot see it.
+        """
+        return any(kw.arg == "cache_control" for kw in node.keywords)
 
     def _check_pcl001_system(self, node: ast.Call) -> None:
         system_val = self._get_system_arg(node)

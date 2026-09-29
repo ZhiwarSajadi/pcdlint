@@ -1877,3 +1877,51 @@ def test_r13_sarif_columns_survive_a_form_feed_earlier_in_the_file(
 
     clean = region(False)
     assert region(True) == clean
+
+
+# --- R-15: a request-level cache_control is still a breakpoint -----------
+
+_R15_TAIL = (
+    '    messages=[{"role": "user", "content": "hi"}],\n'
+    ")\n"
+)
+
+def test_r15_request_level_cache_control_still_reports() -> None:
+    """Anthropic's automatic caching puts one breakpoint at the request
+    level, applying it to the last cacheable block -- so taint in `system`
+    is still a total miss, and PCL005 looked only inside system/messages."""
+    source = (
+        "from datetime import datetime\n"
+        'STATIC_RULES = "rules " * 30\n'
+        "client.messages.create(\n"
+        '    model="m",\n'
+        '    cache_control={"type": "ephemeral"},\n'
+        "    system=f'{STATIC_RULES} {datetime.now()}',\n"
+        + _R15_TAIL
+    )
+    assert "PCL005" in _codes(source), _codes(source)
+
+def test_r15_request_level_cache_control_with_a_clean_prompt_reports_nothing() -> None:
+    """The breakpoint alone is not a finding; only taint before it is."""
+    source = (
+        "from datetime import datetime\n"
+        'STATIC_RULES = "rules " * 30\n'
+        "client.messages.create(\n"
+        '    model="m",\n'
+        '    cache_control={"type": "ephemeral"},\n'
+        "    system=STATIC_RULES,\n"
+        + _R15_TAIL
+    )
+    assert _codes(source) == [], _codes(source)
+
+def test_r15_without_any_cache_control_reports_nothing() -> None:
+    """PCL005 only exists when there is a breakpoint to invalidate."""
+    source = (
+        "from datetime import datetime\n"
+        'STATIC_RULES = "rules " * 30\n'
+        "client.messages.create(\n"
+        '    model="m",\n'
+        "    system=f'{STATIC_RULES} {datetime.now()}',\n"
+        + _R15_TAIL
+    )
+    assert "PCL005" not in _codes(source), _codes(source)

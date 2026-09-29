@@ -100,6 +100,13 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `PCL005` now sees Anthropic's automatic caching. A single `cache_control`
+  field at the top level of the request applies the breakpoint to the last
+  cacheable block, but the rule only looked for `cache_control` *inside*
+  `system`/`messages`, so it reported nothing for a 100% miss. A
+  request-level breakpoint now makes taint anywhere in the request count;
+  "only when a breakpoint is present" is unchanged, and a clean prompt with
+  the same breakpoint still reports nothing.
 - Line numbers are Python's now, not `str.splitlines()`'s. `splitlines()`
   also breaks on form feed, `\v`, `\x1c`–`\x1e`, `\x85`, U+2028 and
   U+2029; `ast` and `tokenize` do not. After any of those earlier in a file

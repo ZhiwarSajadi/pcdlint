@@ -73,6 +73,10 @@ prefix only when it is byte-identical up to a `cache_control` breakpoint, so
 `STATIC + f"{now}"` inside the block carrying that breakpoint throws away the
 whole cache — that is what `PCL005` reports.
 
+A `cache_control` on the *request* itself (Anthropic's automatic caching)
+counts the same way: it applies the breakpoint to the last cacheable block,
+so taint anywhere in `system` or `messages` is a 100% miss there too.
+
 See [OpenAI's prompt caching guide](https://platform.openai.com/docs/guides/prompt-caching)
 and [Anthropic's prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 
@@ -86,7 +90,7 @@ and [Anthropic's prompt caching docs](https://platform.claude.com/docs/en/build-
 | `PCL002` | `unsorted-json-in-prefix` | WARNING | ✅ | `json.dumps()` without `sort_keys=True`: key order follows how the dict was built, so two runs can disagree. A dict/list *literal* is exempt — its order is the source order. |
 | `PCL003` | `set-iteration-in-prompt` | ERROR | ✅ | Python's `PYTHONHASHSEED` randomizes set iteration order across processes |
 | `PCL004` | `dynamic-tools-mutation` | WARNING | — | Changing tool definition order invalidates the entire prompt cache hierarchy |
-| `PCL005` | `taint-before-cache-breakpoint` | ERROR | — | Dynamic value anywhere before an Anthropic `cache_control` breakpoint |
+| `PCL005` | `taint-before-cache-breakpoint` | ERROR | — | Dynamic value anywhere before an Anthropic `cache_control` breakpoint, on a block or on the request itself (automatic caching) |
 
 `PCL001`, `PCL004` and `PCL005` have no mechanical fix: only you know where
 the dynamic value belongs, or what the tool order should be.
