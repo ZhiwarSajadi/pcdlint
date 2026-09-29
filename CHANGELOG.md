@@ -100,6 +100,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- The README's GitHub Actions recipe uploaded SARIF only on runs that had
+  no findings. `pcdlint check --format sarif > f` exits 1 when it reports
+  anything, so the step failed and the job stopped before the upload --
+  precisely the run whose results were wanted. The recipe now absorbs exit
+  1 (`|| test $? -eq 1`, verified against the real CLI: findings → step 0
+  with results in the file, an unanalyzable path → step 1), uploads, and
+  enforces in a separate step afterwards. The `--diff` variant also
+  documents `fetch-depth: 0`: a default checkout is a shallow single-ref
+  clone, where `origin/<base>` does not exist and pcdlint exits 2.
 - **Set detection (R-17).** `PCL003` only recognised a set spelled `{...}`,
   `set(...)`, or a name already tracked as one. It now also reports: a local
   helper whose summary says it returns a set (PCL004 already knew that); the

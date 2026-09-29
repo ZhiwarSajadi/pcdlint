@@ -268,22 +268,40 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pcdlint
-      - run: pcdlint check src/ --fail-on-warn
       # Findings appear directly on the PR diff via Code Scanning.
-      - run: pcdlint check src/ --format sarif > pcdlint.sarif
+      # pcdlint exits 1 for findings and 2 when it could not analyze. Only 1
+      # may be absorbed here: run this step before the enforcing one, with a
+      # bare `>`, and it fails on every run that has findings -- which is
+      # exactly the run whose results you wanted uploaded.
+      - name: Emit SARIF
+        run: pcdlint check src/ --format sarif > pcdlint.sarif || test $? -eq 1
       - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        if: always()
         with:
           sarif_file: pcdlint.sarif
+      - name: Enforce
+        run: pcdlint check src/ --fail-on-warn
 ```
 
 Code Scanning has to be enabled for the repository (free for public repos).
 Add `continue-on-error: true` to the upload step if some of your repositories
 do not have it enabled.
 
-To lint only the lines a pull request changed, swap the last check for:
+To lint only the lines a pull request changed, swap the enforcing step for:
 
 ```yaml
-      - run: pcdlint check src/ --diff "origin/${{ github.base_ref }}" --fail-on-warn
+      - name: Enforce
+        run: pcdlint check src/ --diff "origin/${{ github.base_ref }}" --fail-on-warn
+```
+
+`--diff` needs the base branch to exist locally, and a default checkout is a
+shallow, single-ref clone where `origin/<base>` does not -- pcdlint would
+exit 2 with "unknown revision". Give that variant a full history:
+
+```yaml
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 ```
 
 ---

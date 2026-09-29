@@ -1386,6 +1386,25 @@ def test_every_workflow_action_is_pinned_to_a_commit_sha() -> None:
     assert pinned >= 8, f"expected the workflows' actions, found {pinned}"
 
 
+# --- R-19: the README's CI recipe has to actually run --------------------
+
+def test_readme_sarif_recipe_survives_a_run_with_findings() -> None:
+    """The recipe redirected bare, so the step failed on every run that had
+    findings -- which is exactly the run whose SARIF was wanted. Verified
+    against the real CLI: findings -> step 0 with results in the file,
+    unanalyzable path -> step 1, clean -> step 0."""
+    import re
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+        encoding="utf-8")
+    assert re.search(
+        r"format sarif > \S+ \|\| test \$\? -eq 1", readme), readme
+    # `--diff origin/<base>` needs the base branch, and the default checkout
+    # is a shallow single-ref clone where it does not exist: exit 2.
+    assert "fetch-depth: 0" in readme, readme
+
+
 # --- R-01: an internal error must never look like a finding --------------
 
 def test_r01_deep_concatenation_is_analyzed_not_crashed() -> None:
