@@ -1925,3 +1925,33 @@ def test_r15_without_any_cache_control_reports_nothing() -> None:
         + _R15_TAIL
     )
     assert "PCL005" not in _codes(source), _codes(source)
+
+
+# --- R-16: taint propagation gaps ----------------------------------------
+# Each sub-item pairs a construct that is missed with a simpler control
+# that is caught, so a failure names the construct rather than the harness.
+
+def test_r16f_awaited_taint_reaches_the_prompt() -> None:
+    source = '''
+        import asyncio
+        from datetime import datetime
+        async def build():
+            return f"Time: {datetime.now()}\\n{STATIC_RULES}"
+        async def main():
+            system = await build()
+            client.messages.create(model="m", max_tokens=1, system=system,
+                messages=[])
+        asyncio.run(main())
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16f_control_unawaited_helper_still_reports() -> None:
+    source = '''
+        from datetime import datetime
+        def build():
+            return f"Time: {datetime.now()}\\n{STATIC_RULES}"
+        system = build()
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)

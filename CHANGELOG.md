@@ -100,6 +100,10 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- **Taint propagation (R-16).** Constructs that carried a dynamic value into
+  a prompt without being reported now are:
+  - `system = await build()` — `ast.Await` was not unwrapped, so nothing
+    behind an `await` could be seen.
 - `PCL005` now sees Anthropic's automatic caching. A single `cache_control`
   field at the top level of the request applies the breakpoint to the last
   cacheable block, but the rule only looked for `cache_control` *inside*

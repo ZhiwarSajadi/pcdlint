@@ -740,6 +740,8 @@ class TaintTracker:
 
     def get_taint_origin_of_node(self, node: ast.AST) -> TaintOrigin | None:
         """Resolve TaintOrigin from an AST node if it contains taint."""
+        if isinstance(node, ast.Await):
+            return self.get_taint_origin_of_node(node.value)
         if isinstance(node, ast.FormattedValue):
             return self.get_taint_origin_of_node(node.value)
         if isinstance(node, ast.IfExp):
@@ -1398,6 +1400,8 @@ class TaintTracker:
 
     def get_prefix_tainted(self, node: ast.AST) -> TaintOrigin | None:
         """Check if an AST expression is prefix-tainted and return its TaintOrigin."""
+        if isinstance(node, ast.Await):
+            return self.get_prefix_tainted(node.value)
         if isinstance(node, ast.Name):
             origin = self._get(self._b.prefix_tainted, node.id, node)
             return origin if origin else None
