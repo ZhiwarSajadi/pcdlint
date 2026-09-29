@@ -102,6 +102,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 - **Taint propagation (R-16).** Constructs that carried a dynamic value into
   a prompt without being reported now are:
+  - `self.system = f"..."` in `__init__`, read as `system=self.system` —
+    attribute targets were never tracked, and `get_prefix_tainted` had no
+    `Attribute` branch either, so a prompt built on an object reported
+    nothing. `self.x` bindings are now keyed by the **class** scope rather
+    than the method, because `__init__` and `go` are different scopes and a
+    method-held binding would be invisible from its sibling. Two classes
+    stay separate — a test pins that one class's timestamp cannot answer
+    for another.
   - `system, user = f"...{datetime.now()}...", "hi"` — only plain `ast.Name`
     targets were tracked, so a tuple/list target was skipped whole and
     bound nothing. Targets now pair element-wise with a Tuple/List value of

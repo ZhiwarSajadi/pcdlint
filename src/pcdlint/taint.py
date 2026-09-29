@@ -146,24 +146,43 @@ def _static_str_len(node: ast.AST) -> int | None:
 
 
 def _assign_pairs(target: ast.expr, value: ast.AST | None,
-                  out: list[tuple[str, ast.AST]]) -> None:
+                  out: list[tuple[str, ast.AST, Scope | None]],
+                  class_scope: Scope) -> None:
     """Pair each assignment target with the expression that binds it.
 
-    A Name takes the whole right-hand side. A Tuple/List target pairs
-    element-wise with a Tuple/List value of the same length; anything else
-    -- a call that returns a pair, a star-unpack, a length mismatch -- is
-    not something this can see through, and guessing would bind the wrong
-    expression to the wrong name.
+    A Name takes the whole right-hand side, keyed by the statement's own
+    scope. ``self.x`` is keyed by the *class* instead: written in
+    ``__init__`` and read in ``go``, the two method scopes differ, and a
+    binding held by the method would be invisible from its sibling. A
+    Tuple/List target pairs element-wise with a Tuple/List value of the
+    same length; anything else -- a call that returns a pair, a
+    star-unpack, a length mismatch -- is not something this can see
+    through, and guessing would bind the wrong expression to the wrong
+    name.
     """
     if isinstance(target, ast.Name):
         if value is not None:
-            out.append((target.id, value))
+            out.append((target.id, value, None))
+        return
+    if isinstance(target, ast.Attribute):
+        attr = _self_attribute(target)
+        if attr is not None and value is not None:
+            out.append((attr, value, class_scope))
         return
     if (isinstance(target, (ast.Tuple, ast.List))
             and isinstance(value, (ast.Tuple, ast.List))
             and len(target.elts) == len(value.elts)):
         for element, item in zip(target.elts, value.elts):
-            _assign_pairs(element, item, out)
+            _assign_pairs(element, item, out, class_scope)
+
+
+def _self_attribute(node: ast.AST) -> str | None:
+    """``self.x`` as the name its binding is stored under, else None."""
+    if (isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"):
+        return f"self.{node.attr}"
+    return None
 
 
 def _has_sort_keys(node: ast.Call) -> bool:
@@ -380,6 +399,9 @@ class TaintTracker:
 
     def __init__(self) -> None:
         self._node_scope: dict[int, Scope] = {}
+        # Class each node sits in, so `self.x` can be keyed by the class
+        # rather than by the method that happened to write it.
+        self._node_class: dict[int, Scope] = {}
         self._node_branch: dict[int, bool] = {}
         self._node_cond: dict[int, bool] = {}
         self._node_loop: dict[int, bool] = {}
@@ -449,24 +471,31 @@ class TaintTracker:
         inside a function still counts for the whole file.
         """
         records: list[tuple[int, int, str, str]] = []
-        stack: list[tuple[ast.AST, Scope, bool, bool, ast.AST | None]] = [
-            (tree, MODULE_SCOPE, False, False, None),
+        stack: list[tuple[ast.AST, Scope, bool, bool, ast.AST | None, Scope]] = [
+            (tree, MODULE_SCOPE, False, False, None, MODULE_SCOPE),
         ]
         while stack:
-            node, scope, in_cond, in_loop, loop_iter = stack.pop()
+            node, scope, in_cond, in_loop, loop_iter, class_scope = stack.pop()
             self._node_scope[id(node)] = scope
+            self._node_class[id(node)] = class_scope
             self._node_branch[id(node)] = in_cond or in_loop
             self._node_cond[id(node)] = in_cond
             self._node_loop[id(node)] = in_loop
             self._node_loop_iter[id(node)] = loop_iter
             self._record_imports(node, records)
             child_scope = scope
+            child_class = class_scope
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 child_scope = scope + (node.name,)
+            if isinstance(node, ast.ClassDef):
+                # Only a class extends it: a function defined in a method is
+                # not a new home for `self`, and a nested class replaces it.
+                child_class = child_scope
             children = list(ast.iter_child_nodes(node))
             flags = _child_flags(node, in_cond, in_loop, loop_iter, len(children))
             for child, (c_cond, c_loop, c_iter) in zip(children, flags):
-                stack.append((child, child_scope, c_cond, c_loop, c_iter))
+                stack.append((child, child_scope, c_cond, c_loop, c_iter,
+                              child_class))
         for _lineno, _col, local, qualified in sorted(records):
             self._imports[local] = qualified
 
@@ -496,6 +525,17 @@ class TaintTracker:
     def scope_of(self, node: ast.AST) -> Scope:
         """Lexical scope of a node (module scope when unknown)."""
         return self._node_scope.get(id(node), MODULE_SCOPE)
+
+    def class_scope_of(self, node: ast.AST) -> Scope:
+        """Class a node sits in, or the module scope when it sits in none.
+
+        ``self.x`` bindings are keyed by this: written in ``__init__`` and
+        read in ``go``, the method scopes differ, so a binding held by the
+        method would be invisible from its sibling. Outside a class both
+        writer and reader fall back to the module scope, which keeps a
+        stray ``self`` outside a class resolving to where it was written.
+        """
+        return self._node_class.get(id(node), MODULE_SCOPE)
 
     def in_branch(self, node: ast.AST) -> bool:
         """True when the node only runs on some paths (if/loop/try body)."""
@@ -806,6 +846,12 @@ class TaintTracker:
             origin = self._get(self._b.tainted, node.id, node)
             return origin if origin else None
         if isinstance(node, ast.Attribute):
+            own = _self_attribute(node)
+            if own is not None:
+                origin = self._get(self._b.tainted, own, node,
+                                   self.class_scope_of(node))
+                if origin:
+                    return origin
             return self.get_taint_origin_of_node(node.value)
         if isinstance(node, ast.Call):
             origin = self.is_taint_source(node)
@@ -920,24 +966,25 @@ class TaintTracker:
 
     def track_assignment(self, node: ast.AST) -> None:
         """Analyze an assignment statement (Assign or AnnAssign) and update states."""
-        pairs: list[tuple[str, ast.AST]] = []
+        pairs: list[tuple[str, ast.AST, Scope | None]] = []
+        class_scope = self.class_scope_of(node)
         if isinstance(node, ast.Assign):
             for t in node.targets:
-                _assign_pairs(t, node.value, pairs)
+                _assign_pairs(t, node.value, pairs, class_scope)
         elif isinstance(node, ast.AnnAssign):
-            _assign_pairs(node.target, node.value, pairs)
+            _assign_pairs(node.target, node.value, pairs, class_scope)
 
         if not pairs:
             return
 
         scope = self.scope_of(node)
         in_branch = self.in_branch(node)
-        for var_name, value in pairs:
+        for var_name, value, key_scope in pairs:
             # Evaluate the RHS against live state (it may read the name it rebinds),
             # then strong-update that name's bindings.
             buf = _Bindings()
-            self._track_target_value(node, var_name, value, buf)
-            key = (scope, var_name)
+            self._track_target_value(node, var_name, value, buf, key_scope)
+            key = (scope if key_scope is None else key_scope, var_name)
             self._b.clear_key(key)
             self._b.merge(buf)
             self._label_origin(key, var_name)
@@ -958,8 +1005,9 @@ class TaintTracker:
             self._b.prefix_tainted[key] = named
 
     def _track_target_value(self, node: ast.AST, var_name: str, value: ast.AST,
-                            buf: _Bindings) -> None:
-        scope = self.scope_of(node)
+                            buf: _Bindings, scope: Scope | None = None) -> None:
+        if scope is None:
+            scope = self.scope_of(node)
         key = (scope, var_name)
 
         # Text the value already is, start to finish. Measured first because
@@ -1112,7 +1160,7 @@ class TaintTracker:
         if isinstance(value, ast.IfExp):
             for arm in (value.body, value.orelse):
                 arm_buf = _Bindings()
-                self._track_target_value(node, var_name, arm, arm_buf)
+                self._track_target_value(node, var_name, arm, arm_buf, scope)
                 buf.merge_path(arm_buf)
             self._track_json_and_branch(var_name, value, scope, buf)
             return
@@ -1457,6 +1505,16 @@ class TaintTracker:
 
     def get_prefix_tainted(self, node: ast.AST) -> TaintOrigin | None:
         """Check if an AST expression is prefix-tainted and return its TaintOrigin."""
+        if isinstance(node, ast.Attribute):
+            # Mirrors get_taint_origin_of_node, which has always unwrapped
+            # an attribute -- this branch was simply missing.
+            own = _self_attribute(node)
+            if own is not None:
+                origin = self._get(self._b.prefix_tainted, own, node,
+                                   self.class_scope_of(node))
+                if origin:
+                    return origin
+            return self.get_prefix_tainted(node.value)
         if isinstance(node, (ast.Await, ast.NamedExpr)):
             return self.get_prefix_tainted(node.value)
         if isinstance(node, ast.IfExp):

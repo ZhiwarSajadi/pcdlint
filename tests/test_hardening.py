@@ -2010,6 +2010,56 @@ def test_r16j_both_resolvers_handle_the_same_shapes() -> None:
             f"prefix resolver lost a shape the origin resolver handles: {expr}"
         )
 
+_R16A_TAIL = '''
+                client.messages.create(model="m", max_tokens=1,
+                    system=self.system, messages=[])
+'''
+
+def test_r16a_attribute_binding_reaches_the_prompt() -> None:
+    """`self.system = f"..."` in __init__ and read in go(): only ast.Name
+    targets were tracked, so the attribute bound nothing."""
+    source = '''
+        from datetime import datetime
+        class PromptBuilder:
+            def __init__(self):
+                self.system = f"Time: {datetime.now()}\\n{STATIC_RULES}"
+            def go(self):
+''' + _R16A_TAIL + '''
+        PromptBuilder().go()
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16a_control_static_attribute_reports_nothing() -> None:
+    source = '''
+        class PromptBuilder:
+            def __init__(self):
+                self.system = STATIC_RULES
+            def go(self):
+''' + _R16A_TAIL + '''
+        PromptBuilder().go()
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
+
+def test_r16a_attribute_bindings_do_not_leak_between_classes() -> None:
+    """Class scope, not method scope, is the binding's home -- and it has to
+    stop at the class, or one class's timestamp answers for another."""
+    source = '''
+        from datetime import datetime
+        class Clean:
+            def __init__(self):
+                self.system = STATIC_RULES
+            def go(self):
+''' + _R16A_TAIL + '''
+        class Tainted:
+            def __init__(self):
+                self.system = f"Time: {datetime.now()}\\n{STATIC_RULES}"
+            def go(self):
+''' + _R16A_TAIL + '''
+        Clean().go()
+        Tainted().go()
+    '''
+    assert _codes(source) == ["PCL001"], _codes(source)
+
 def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     source = '''
         import asyncio
