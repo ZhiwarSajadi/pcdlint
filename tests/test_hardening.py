@@ -1561,3 +1561,27 @@ def test_r04_prompt_named_var_in_a_file_importing_an_llm_still_reports() -> None
         print(context)
     '''
     assert _codes(source) == ["PCL003"]
+
+
+# --- R-05: the dotted path alone does not make a sink --------------------
+
+def test_r05_twilio_style_messages_create_is_not_a_sink() -> None:
+    """`twilio.messages.create(body=...)` reads as `.messages.create` but
+    sends a text message, not a prompt."""
+    source = '''
+        import json
+        tags = {"a", "b"}
+        twilio.messages.create(body=", ".join(tags), from_="+1", to="+2")
+        twilio.messages.create(body=json.dumps({"a": 1}), from_="+1", to="+2")
+    '''
+    assert _codes(source) == []
+
+def test_r05_sink_without_a_model_keyword_still_reports() -> None:
+    """A payload keyword on its own is enough: the model may come from the
+    client, and the legacy positional form has no keywords at all."""
+    source = '''
+        from datetime import datetime
+        client.messages.create(
+            messages=[{"role": "system", "content": f"Time: {datetime.now()}"}])
+    '''
+    assert _codes(source) == ["PCL001"]

@@ -18,6 +18,13 @@ PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "c
 _SINK_METHODS = frozenset({"create", "parse", "stream"})
 _SINK_RESOURCES = frozenset({"completions", "messages", "responses"})
 
+# Keywords that make ``.messages.create(...)`` a completion rather than a
+# message send: a model to run, or the payload the model reads. ``tools`` is
+# here because PCL004 exists to judge it and nothing else.
+_LLM_SHAPE_KEYWORDS = frozenset({
+    "model", "messages", "input", "system", "instructions", "prompt", "tools",
+})
+
 # SDK packages whose import alone says this file writes prompts. Used only to
 # decide whether a prompt-shaped *name* means anything; a name that reaches a
 # real sink is proof regardless and never consults this.
@@ -42,19 +49,26 @@ def call_parts(node: ast.Call) -> list[str]:
 def is_llm_api_call(node: ast.Call) -> bool:
     """True for a documented Anthropic or OpenAI entry point.
 
-    Both halves must match exactly. Substring matching used to accept
-    ``db.messages.create_index`` and ``x.completions.recreate`` while missing
-    ``chat.completions.parse``, which never contains "create" at all.
+    Both halves of the path must match exactly. Substring matching used to
+    accept ``db.messages.create_index`` and ``x.completions.recreate`` while
+    missing ``chat.completions.parse``, which never contains "create" at all.
 
-    There is no keyword fallback either: ``messages=`` plus ``model=`` is what
-    any local ``def render(messages, model)`` looks like, and treating it as a
-    sink means judging a plain helper's arguments as prompt prefixes. A
-    bespoke wrapper is a name this linter cannot know.
+    The path alone is still not enough: ``twilio.messages.create(body=...)``
+    is the same two words and sends a text message. Every completion entry
+    point takes a model or a prompt payload, so the call has to carry one --
+    or use the legacy positional ``create(model, messages)`` form, which has
+    no keywords at all. This only ever narrows what counts as a sink; there
+    is deliberately no fallback that accepts a bare ``messages=`` plus
+    ``model=`` pair, because that is what any local ``def render(messages,
+    model)`` looks like. A bespoke wrapper is a name this linter cannot know.
     """
     parts = call_parts(node)
-    return (len(parts) >= 2
-            and parts[0] in _SINK_METHODS
-            and parts[1] in _SINK_RESOURCES)
+    if len(parts) < 2 or parts[0] not in _SINK_METHODS \
+            or parts[1] not in _SINK_RESOURCES:
+        return False
+    if len(node.args) >= 2:
+        return True
+    return any(kw.arg in _LLM_SHAPE_KEYWORDS for kw in node.keywords)
 
 
 def is_anthropic_sink(node: ast.Call) -> bool:

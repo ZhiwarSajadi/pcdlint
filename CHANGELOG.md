@@ -100,6 +100,16 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- A sink now has to look like a completion, not just spell like one.
+  `twilio.messages.create(body=", ".join(tags), ...)` is `.messages.create`
+  like any Anthropic call and sent a text message, yet every node inside it
+  was judged as prompt payload -- reporting `PCL003` and `PCL002` over a
+  phone number. The dotted path must now be accompanied by a model or a
+  prompt payload keyword (`model`, `messages`, `input`, `system`,
+  `instructions`, `prompt`, `tools`), or by the legacy positional
+  `create(model, messages)` form, which carries no keywords. This only ever
+  narrows what counts as a sink: there is still no fallback accepting a bare
+  `messages=` + `model=` pair, which is what any local helper looks like.
 - A prompt-shaped *name* only means something in a file that deals with an
   LLM. `context = ", ".join(tags)` in a script that never mentions one used
   to report `PCL003` -- an ERROR that carries an autofix, so it could fail a
