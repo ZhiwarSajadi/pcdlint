@@ -784,6 +784,17 @@ class TaintTracker:
                 if origin:
                     return origin
             return None
+        if isinstance(node, ast.UnaryOp):
+            return self.get_taint_origin_of_node(node.operand)
+        if isinstance(node, ast.BinOp) and not isinstance(node.op, ast.Add):
+            # Arithmetic on a dynamic value is still dynamic: `time.time() *
+            # 1000` is a timestamp, and `-tainted` is tainted. Only `+` is
+            # excluded, because it has the string-ordering rules above.
+            for operand in (node.left, node.right):
+                origin = self.get_taint_origin_of_node(operand)
+                if origin:
+                    return origin
+            return None
         if _is_string_concat(node):
             parts = self._flatten_string_expr(node)
             for part in parts:
@@ -1429,6 +1440,15 @@ class TaintTracker:
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             for elt in node.elts:
                 origin = self.get_taint_origin_of_node(elt)
+                if origin:
+                    return origin
+        if isinstance(node, ast.UnaryOp):
+            return self.get_prefix_tainted(node.operand)
+        if isinstance(node, ast.BinOp) and not isinstance(node.op, ast.Add):
+            # Kept in step with get_taint_origin_of_node: the two decide the
+            # same question and must not drift apart (see R-16j).
+            for operand in (node.left, node.right):
+                origin = self.get_prefix_tainted(operand)
                 if origin:
                     return origin
         return None

@@ -1945,7 +1945,37 @@ def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     '''
     assert "PCL001" in _codes(source), _codes(source)
 
-def test_r16f_control_unawaited_helper_still_reports() -> None:
+def test_r16g_taint_survives_multiplication() -> None:
+    """`int(time.time() * 1000)` is a timestamp; the multiplication does not
+    make it deterministic."""
+    source = '''
+        import time
+        rid = int(time.time() * 1000)
+        system = f"Request {rid}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16g_taint_survives_a_unary_operator() -> None:
+    source = '''
+        import time
+        rid = -int(time.time())
+        system = f"Request {rid}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16g_control_plain_conversion_still_reports() -> None:
+    source = '''
+        import time
+        rid = int(time.time())
+        system = f"Request {rid}\\n{STATIC_RULES}"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
     source = '''
         from datetime import datetime
         def build():

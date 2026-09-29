@@ -104,6 +104,9 @@ All notable changes to pcdlint are documented here. The format follows
   a prompt without being reported now are:
   - `system = await build()` — `ast.Await` was not unwrapped, so nothing
     behind an `await` could be seen.
+  - `rid = int(time.time() * 1000)` and `-tainted` — only `+` was looked
+    inside, so a non-additive `BinOp` and any `UnaryOp` swallowed taint.
+    Arithmetic on a dynamic value is still dynamic.
 - `PCL005` now sees Anthropic's automatic caching. A single `cache_control`
   field at the top level of the request applies the breakpoint to the last
   cacheable block, but the rule only looked for `cache_control` *inside*
