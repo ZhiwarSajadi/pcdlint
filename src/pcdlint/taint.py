@@ -1168,7 +1168,32 @@ class TaintTracker:
                 return
             current = self._get(self._b.lists, node.target.id, node)
             if current and isinstance(node.value, ast.List):
-                current.elts.extend(node.value.elts)
+                self._grow_list(node.target.id, node, node.value.elts)
+
+    def _list_key(self, name: str, node: ast.AST) -> Key | None:
+        """The key ``_get`` would resolve ``name`` to, when it holds a list."""
+        for key in self._candidates(self._b.lists, name, node, None):
+            if key in self._b.lists:
+                return key
+        return None
+
+    def _grow_list(self, name: str, node: ast.AST, extra: list) -> None:
+        """Rebind ``name`` to a longer copy of its list, leaving the tree alone.
+
+        ``_Bindings.copy()`` is shallow: a snapshot taken before this call and
+        one taken after it share the same ``ast.List`` object, because both
+        still point at the node ``ast.parse`` produced. Editing that node in
+        place makes the earlier moment see the later contents, so a call is
+        judged by a list append that had not run yet. Copy-on-write gives each
+        moment its own node.
+        """
+        key = self._list_key(name, node)
+        if key is None:
+            return
+        old = self._b.lists[key]
+        self._b.lists[key] = ast.copy_location(
+            ast.List(elts=[*old.elts, *extra], ctx=old.ctx), old
+        )
 
     def track_expr_stmt(self, node: ast.Expr, pass_no: int = 0) -> None:
         """Track standalone expressions such as random.shuffle(tools) or list.append()."""
@@ -1204,14 +1229,14 @@ class TaintTracker:
                 caller = node.value.func.value
                 if isinstance(caller, ast.Name):
                     if attr == "append" and node.value.args:
-                        lst = self._get(self._b.lists, caller.id, caller)
-                        if lst:
-                            lst.elts.append(node.value.args[0])
+                        if self._get(self._b.lists, caller.id, caller):
+                            self._grow_list(caller.id, caller,
+                                            [node.value.args[0]])
                     elif attr == "extend" and node.value.args:
                         arg = node.value.args[0]
-                        lst = self._get(self._b.lists, caller.id, caller)
-                        if lst and isinstance(arg, ast.List):
-                            lst.elts.extend(arg.elts)
+                        if self._get(self._b.lists, caller.id, caller) \
+                                and isinstance(arg, ast.List):
+                            self._grow_list(caller.id, caller, arg.elts)
 
     def _taint_shuffled(self, name: str, node: ast.AST) -> None:
         """Record that ``name`` now holds a non-deterministic value."""

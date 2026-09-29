@@ -1632,3 +1632,63 @@ def test_r06_comprehension_still_reported() -> None:
         system = STATIC_RULES + json.dumps({k: v for k, v in rows})
     ''' + _R06_TAIL
     assert _codes(source) == ["PCL002"]
+
+
+# --- R-07: tracking must never edit the tree it was handed ---------------
+
+def test_r07_append_after_the_call_is_not_seen_by_it() -> None:
+    """The call ran before the append, so it never saw that element."""
+    source = '''
+        from datetime import datetime
+        messages = [{"role": "system", "content": STATIC_RULES}]
+        client.chat.completions.create(model="m", messages=messages)
+        messages.append({"role": "system",
+                         "content": f"{datetime.now()} {STATIC_RULES}"})
+    '''
+    assert _codes(source) == []
+
+def test_r07_extend_after_the_call_is_not_seen_by_it() -> None:
+    """Same for extend()."""
+    source = '''
+        from datetime import datetime
+        messages = [{"role": "system", "content": STATIC_RULES}]
+        client.chat.completions.create(model="m", messages=messages)
+        messages.extend([{"role": "system",
+                          "content": f"{datetime.now()} {STATIC_RULES}"}])
+    '''
+    assert _codes(source) == []
+
+def test_r07_append_before_the_call_still_reports() -> None:
+    """Reversed order: the element really is in the list the call reads."""
+    source = '''
+        from datetime import datetime
+        messages = [{"role": "system", "content": STATIC_RULES}]
+        messages.append({"role": "system",
+                         "content": f"{datetime.now()} {STATIC_RULES}"})
+        client.chat.completions.create(model="m", messages=messages)
+    '''
+    assert _codes(source) == ["PCL001"]
+
+def test_r07_tracking_does_not_modify_the_parsed_tree() -> None:
+    """Snapshots are shallow copies of the bindings, so a mutated ast.List
+    is visible to every snapshot at once -- and to the rule's own walks."""
+    import ast
+
+    from pcdlint.analyzer import _track_tree
+    from pcdlint.taint import TaintTracker
+
+    source = (
+        "from datetime import datetime\n"
+        "messages = [{'role': 'system', 'content': STATIC_RULES}]\n"
+        "messages.append({'role': 'user', 'content': 'x'})\n"
+        "messages.extend([{'role': 'user', 'content': 'y'}])\n"
+        "client.chat.completions.create(model='m', messages=messages)\n"
+        "tools = [{'name': 'a'}]\n"
+        "tools.append({'name': 'b'})\n"
+    )
+    tree = ast.parse(source)
+    before = ast.dump(tree)
+    tracker = TaintTracker()
+    tracker.build_scopes(tree)
+    _track_tree(tracker, tree)
+    assert ast.dump(tree) == before

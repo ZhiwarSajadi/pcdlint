@@ -100,6 +100,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Tracking no longer edits the tree it was handed. `messages.append(...)`
+  and `.extend()` grew the `ast.List` that `ast.parse` produced, and since
+  control-flow snapshots and per-call snapshots are shallow copies, every
+  one of them saw the change -- including snapshots taken *before* the
+  append ran. A call was therefore judged against a list append that had
+  not happened yet. The list is now rebuilt and rebound copy-on-write, so
+  each moment keeps its own node and `ast.dump(tree)` is identical before
+  and after analysis.
 - `PCL002` no longer reports a `json.dumps()` of a literal. A dict literal
   is insertion-ordered, so its output is the same every run and
   `sort_keys=True` changes nothing; `sort_keys` is meaningless on a list
