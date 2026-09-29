@@ -6,6 +6,8 @@ All notable changes to pcdlint are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
 ### Added
 
 - `[tool.pcdlint] taint-sources` and `sinks`, for the calls this linter
@@ -508,6 +510,7 @@ First release: the four rules (PCL001 prefix-taint, PCL002 unsorted JSON,
 PCL003 unsorted set, PCL004 dynamic tools), text and JSON output, the
 `pclint` alias, and `python -m pcdlint`.
 
-[Unreleased]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ZhiwarSajadi/pcdlint/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ZhiwarSajadi/pcdlint/releases/tag/v0.1.0
