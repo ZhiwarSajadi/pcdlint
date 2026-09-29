@@ -100,6 +100,17 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- **Set detection (R-17).** `PCL003` only recognised a set spelled `{...}`,
+  `set(...)`, or a name already tracked as one. It now also reports: a local
+  helper whose summary says it returns a set (PCL004 already knew that); the
+  set operators `|`, `&`, `-`, `^` and `.union/.intersection/.difference`;
+  `frozenset(...)`; `list()`/`tuple()`/`map()` over a set, which copy its
+  order rather than fixing it; and a comprehension or generator iterating
+  one. The `--fix` rule keeps its shape and now has branches to match it: an
+  edit is offered only where `sorted()` is provably safe, so a helper's
+  return value reports with no edit rather than a rewrite of something whose
+  elements nobody can see. Left undone and recorded as a known gap: a
+  `for x in a_set:` loop that accumulates into prompt text.
 - **Taint propagation (R-16).** Constructs that carried a dynamic value into
   a prompt without being reported now are:
   - `self.system = f"..."` in `__init__`, read as `system=self.system` —
