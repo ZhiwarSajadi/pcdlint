@@ -176,7 +176,10 @@ def test_apply_edits_renders_trailing_comma_call() -> None:
 def test_apply_edits_renders_sorted_wrap() -> None:
     from pcdlint.fixer import apply_edits
 
-    source = "tags = {'a', 'b'}\nprompt = ', '.join(tags)\n"
+    # The sink is required: since R-04 a prompt-shaped name in a file with
+    # no LLM call is just a name, and this test is about the rewrite, not
+    # about when PCL003 decides to fire.
+    source = ("tags = {'a', 'b'}\nprompt = ', '.join(tags)\n" + PCL002_TAIL)
     fixed = apply_edits(source, _edits(source, "PCL003"))
     assert "prompt = ', '.join(sorted(tags))" in fixed
     assert "PCL003" not in [d.rule_id for d in analyze_code(fixed)]

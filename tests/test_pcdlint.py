@@ -208,10 +208,16 @@ client.chat.completions.create(
 
 
 def test_pcl003_detects_fstring_set_interpolation() -> None:
-    """PCL003: f'{tag_set}' without sorted() triggers PCL003."""
+    """PCL003: f'{tag_set}' without sorted() triggers PCL003.
+
+    The sink call is what makes `prompt` prompt material; since R-04 a
+    prompt-shaped name alone is not enough to report anything.
+    """
     source = '''
 tag_set = {"tag1", "tag2"}
 prompt = f"Tags: {tag_set}"
+client.messages.create(model="m", messages=[
+    {"role": "user", "content": prompt}])
 '''
     diags = analyze_code(source, "test.py")
     pcl003 = [d for d in diags if d.rule_id == "PCL003"]

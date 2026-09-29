@@ -18,6 +18,16 @@ PROMPT_NAME_KEYWORDS = ("prompt", "system", "prefix", "instruction", "rules", "c
 _SINK_METHODS = frozenset({"create", "parse", "stream"})
 _SINK_RESOURCES = frozenset({"completions", "messages", "responses"})
 
+# SDK packages whose import alone says this file writes prompts. Used only to
+# decide whether a prompt-shaped *name* means anything; a name that reaches a
+# real sink is proof regardless and never consults this.
+_LLM_SDK_MODULES = frozenset({"anthropic", "openai", "litellm"})
+
+
+def _root_module(name: str) -> str:
+    """``anthropic.resources`` -> ``anthropic``, so `from x.y import z` matches."""
+    return name.split(".", 1)[0]
+
 
 def call_parts(node: ast.Call) -> list[str]:
     """Attribute chain of ``node.func``, outermost attribute first."""
@@ -143,12 +153,25 @@ class RuleEngine:
         self._llm_used_vars = set()
         self._nodes_in_llm_sink = set()
         self._flow_names = {}
+        # Whether this file deals with an LLM at all. Without evidence, a
+        # name that merely *looks* like prompt material -- `context`,
+        # `rules`, `system_info` -- is just a name, and PCL003's autofix
+        # would rewrite ordinary data code on that guess.
+        self._llm_context = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and self._is_llm_api_call(node):
+                self._llm_context = True
                 for child in ast.walk(node):
                     self._nodes_in_llm_sink.add(id(child))
                     if isinstance(child, ast.Name):
                         self._llm_used_vars.add(child.id)
+            elif isinstance(node, ast.Import):
+                if any(_root_module(alias.name) in _LLM_SDK_MODULES
+                       for alias in node.names):
+                    self._llm_context = True
+            elif isinstance(node, ast.ImportFrom):
+                if _root_module(node.module or "") in _LLM_SDK_MODULES:
+                    self._llm_context = True
         # Reverse index: node id -> the names bound to it. Building it once
         # turns _reaches_prompt's scan of every flow entry into a lookup, so
         # the per-node cost no longer grows with the flow table.
@@ -550,7 +573,12 @@ class RuleEngine:
         if id(node) in self._nodes_in_llm_sink:
             return True
         for name in self._flow_names.get(id(node), ()):
-            if name in self._llm_used_vars or self._is_prompt_name(name):
+            # Reaching a sink is proof whatever its name is. A prompt-shaped
+            # name is only a guess, and a guess is worth nothing in a file
+            # that never mentions an LLM.
+            if name in self._llm_used_vars:
+                return True
+            if self._llm_context and self._is_prompt_name(name):
                 return True
         return False
 

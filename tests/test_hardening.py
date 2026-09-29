@@ -1525,3 +1525,39 @@ def test_r03_cache_control_keeps_the_first_message_a_prefix() -> None:
                        "content": f"{datetime.now()} "}])
     '''
     assert _codes(source) == ["PCL001", "PCL005"]
+
+
+# --- R-04: the name heuristic needs an LLM in the file -------------------
+
+def test_r04_prompt_named_vars_with_no_llm_call_are_clean() -> None:
+    """`context`/`system_info` in a file that never mentions an LLM is not
+    prompt material -- and PCL003 is an ERROR carrying an autofix, so it can
+    fail a build over code it has no business judging."""
+    source = '''
+        tags = {"a", "b"}
+        context = ", ".join(tags)
+        system_info = ", ".join(tags)
+        print(context, system_info)
+    '''
+    assert _codes(source) == []
+
+def test_r04_prompt_named_var_feeding_a_sink_still_reports() -> None:
+    """The same code, with the value actually passed as the system prompt."""
+    source = '''
+        tags = {"a", "b"}
+        context = ", ".join(tags)
+        client.messages.create(model="m", max_tokens=1, system=context,
+            messages=[])
+    '''
+    assert _codes(source) == ["PCL003"]
+
+def test_r04_prompt_named_var_in_a_file_importing_an_llm_still_reports() -> None:
+    """An SDK import is evidence the file deals with prompts even before a
+    call site shows up."""
+    source = '''
+        import anthropic
+        tags = {"a", "b"}
+        context = ", ".join(tags)
+        print(context)
+    '''
+    assert _codes(source) == ["PCL003"]

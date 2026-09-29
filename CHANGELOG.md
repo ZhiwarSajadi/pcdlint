@@ -100,6 +100,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- A prompt-shaped *name* only means something in a file that deals with an
+  LLM. `context = ", ".join(tags)` in a script that never mentions one used
+  to report `PCL003` -- an ERROR that carries an autofix, so it could fail a
+  build and rewrite ordinary data code on nothing but the word "context".
+  Reachability through a real sink was always proof and still is; the name
+  heuristic now additionally requires a recognized sink call or an import of
+  `anthropic`/`openai`/`litellm`. Two tests that pinned the old behaviour
+  were updated to include a call site, since what they were really testing
+  was detection and the rewrite.
 - A dynamic first *user* message is no longer reported when the call has a
   separate `system=`/`instructions=` argument. Anthropic keeps the system
   prompt out of `messages`, so `messages[0]` is the first turn rather than
