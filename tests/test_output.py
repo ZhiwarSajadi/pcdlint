@@ -279,6 +279,38 @@ def test_diff_parser_skips_malformed_hunk_headers() -> None:
 
 # Line 3 carries an unfixable PCL001; line 4 a fixable PCL002. Only line 4
 # is touched by the change under review.
+def test_diff_ignores_lines_that_only_the_base_branch_changed(
+        tmp_path, monkeypatch, capsys) -> None:
+    """`git diff REF` compares against REF's *tip*, not the branch point.
+
+    Once the base branch moves past where this one started, its edits read
+    as changes here and `--diff` reports a finding this branch never
+    introduced. Diffing against the merge-base asks the question `--diff`
+    promises: what did *I* change?
+    """
+    import subprocess
+
+    _repo(tmp_path, monkeypatch, BUGGY)
+    base = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    _git(["checkout", "-q", "-b", "feature"], tmp_path)
+
+    # The base moves: same line, different text. This branch stays put.
+    _git(["checkout", "-q", base], tmp_path)
+    (tmp_path / "sample.py").write_text(
+        BUGGY.replace("STATIC RULES", "OTHER RULES"), encoding="utf-8")
+    _git(["commit", "-q", "-am", "base moves"], tmp_path)
+    _git(["checkout", "-q", "feature"], tmp_path)
+
+    code, out, _err = _run_cli(
+        ["check", "sample.py", "--diff", base], capsys)
+
+    assert code == 0, f"a finding this branch never introduced: {out}"
+    assert "PCL001" not in out, out
+
+
 MIXED = (
     "import json\n"
     "from datetime import datetime\n"

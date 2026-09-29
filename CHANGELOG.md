@@ -108,6 +108,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `--diff` asks what *this* branch changed. It ran `git diff REF`, which
+  compares the working tree with REF's tip — so once the base branch moved
+  past the branch point, its edits read as changes here and a finding this
+  branch never introduced was reported. The diff now targets
+  `git merge-base REF HEAD`, falling back to REF itself when there is no
+  merge-base (a shallow clone, or a ref that is not an ancestor). On the
+  merge-commit checkout GitHub gives a pull request the two are the same,
+  so nothing changes there.
 - A file declaring a non-UTF-8 encoding cookie is analyzed instead of
   refused. `# -*- coding: latin-1 -*-` is legal Python and was rejected
   with "cannot decode as UTF-8", so a project with such a file got exit 2

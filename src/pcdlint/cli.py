@@ -222,8 +222,16 @@ def _filter_to_changed(diagnostics: list, ref: str) -> tuple[list, list[str]]:
     top, top_error = _git_output(["rev-parse", "--show-toplevel"])
     if top_error:
         return [], [f"--diff requires git: {top_error}"]
+    # Ask what *this* branch changed. Diffing against the base's tip also
+    # reports everything the base changed after the branch point, so a
+    # finding this branch never introduced gets blamed on it. No merge-base
+    # -- a shallow clone, or a ref that is not an ancestor -- falls back to
+    # the ref itself, which is what this always did.
+    base, base_error = _git_output(["merge-base", ref, "HEAD"])
+    target = base.strip() if not base_error and base.strip() else ref
     patch, diff_error = _git_output(
-        ["diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-prefix", ref])
+        ["diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-prefix",
+         target])
     if diff_error:
         return [], [f"git diff against {ref!r} failed: {diff_error}"]
 
