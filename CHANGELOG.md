@@ -100,6 +100,13 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- A directory named `env` is no longer skipped silently. It is a common
+  name for application code, and dropping it cost findings with no message
+  explaining why. Real virtualenvs are already caught by the `pyvenv.cfg`
+  rule, which does not care what the folder is called. The rest of the
+  built-in skip list — `build`, `dist` and the tool caches — is now
+  enumerated in the README instead of being a thing you discover when your
+  source turns up missing from a run.
 - Text output no longer hard-wraps at 80 columns when stdout is not a TTY.
   rich word-wraps a non-interactive console, which split
   `path:line:col` across lines and broke grep, editors and GitHub problem

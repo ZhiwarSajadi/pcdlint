@@ -803,7 +803,7 @@ def test_cache_directories_are_not_linted(tmp_path) -> None:
         "client.messages.create(model='m', "
         "system=f'{datetime.now()}' + 'RULES ' * 30, messages=[])\n"
     )
-    for name in (".pytest_cache", ".mypy_cache", "site-packages", "env"):
+    for name in (".pytest_cache", ".mypy_cache", "site-packages", "htmlcov"):
         nested = tmp_path / name
         nested.mkdir()
         (nested / "scratch.py").write_text(buggy, encoding="utf-8")
@@ -1745,3 +1745,27 @@ def test_r09_a_long_path_is_not_wrapped_when_stdout_is_piped(tmp_path) -> None:
                    if "PCL001" in line)
     assert str(target) in finding, finding
     assert re.search(r":\d+:\d+\s", finding), finding
+
+
+# --- R-10: which directories a walk silently skips -----------------------
+
+def _r10_walk(tmp_path, monkeypatch, capsys, folder: str) -> str:
+    # Scan the parent: a path named on the command line is never filtered,
+    # so passing `folder` directly would bypass SKIP_DIRS entirely.
+    (tmp_path / folder).mkdir()
+    (tmp_path / folder / "mod.py").write_text(_R08_BUG, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    code = _run_cli("check", ".")
+    return f"code={code} out={capsys.readouterr().out}"
+
+def test_r10_env_directory_is_scanned(tmp_path, monkeypatch, capsys) -> None:
+    """`env` is a common name for application code, not just a virtualenv.
+    Real virtualenvs are already caught by the pyvenv.cfg rule, which does
+    not depend on what the folder happens to be called."""
+    assert "mod.py" in _r10_walk(tmp_path, monkeypatch, capsys, "env")
+
+def test_r10_build_and_dist_stay_skipped(tmp_path, monkeypatch, capsys) -> None:
+    """Packaging output. Documented in the README rather than discovered
+    by finding your source silently absent from a run."""
+    assert "mod.py" not in _r10_walk(tmp_path, monkeypatch, capsys, "build")
+    assert "mod.py" not in _r10_walk(tmp_path, monkeypatch, capsys, "dist")

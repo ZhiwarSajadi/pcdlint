@@ -188,7 +188,13 @@ checked.
 
 A folder holding a `pyvenv.cfg` is skipped, whatever it is called: `venv311/`,
 `.venv-py312/` and `.tox/py311/` are caught without needing a name on the
-built-in skip list.
+built-in skip list. That list — packaging output and tool caches — is
+`.venv`, `venv`, `node_modules`, `.git`, `__pycache__`, `build`, `dist`,
+`.tox`, `.nox`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`, `.eggs`,
+`htmlcov`, `site-packages` and `.ipynb_checkpoints`. `env` is deliberately
+**not** on it: it is a common name for application code, and the
+`pyvenv.cfg` rule already catches a virtualenv whatever it is called. A path
+you name on the command line is never skipped by any of this.
 
 `--select` and `--ignore` take a comma-separated list and are repeatable. Each
 flag **replaces** the corresponding config value for that run rather than merging

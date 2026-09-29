@@ -11,8 +11,11 @@ from pcdlint.models import Diagnostic
 from pcdlint.rules import RuleEngine, is_llm_api_call
 from pcdlint.taint import TaintTracker
 
+# Names a directory walk never descends into. `env` is deliberately absent:
+# it is a common name for application code, and a real virtualenv is caught
+# by the `pyvenv.cfg` rule instead, which does not care what it is called.
 SKIP_DIRS: set[str] = {
-    ".venv", "venv", "env", "node_modules", ".git", "__pycache__", "build",
+    ".venv", "venv", "node_modules", ".git", "__pycache__", "build",
     "dist", ".tox", ".nox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
     ".eggs", "htmlcov", "site-packages", ".ipynb_checkpoints",
 }
