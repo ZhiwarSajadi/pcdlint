@@ -106,7 +106,10 @@ All notable changes to pcdlint are documented here. The format follows
     behind an `await` could be seen.
   - `rid = int(time.time() * 1000)` and `-tainted` — only `+` was looked
     inside, so a non-additive `BinOp` and any `UnaryOp` swallowed taint.
-    Arithmetic on a dynamic value is still dynamic.
+    Arithmetic on a dynamic value is still dynamic. This also covers the
+    `"Time: %s" % datetime.now()` spelling.
+  - `system=(s := f"...")` — `ast.NamedExpr` was not unwrapped, so a walrus
+    hid whatever it wrapped.
 - `PCL005` now sees Anthropic's automatic caching. A single `cache_control`
   field at the top level of the request applies the breakpoint to the last
   cacheable block, but the rule only looked for `cache_control` *inside*

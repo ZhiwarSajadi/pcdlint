@@ -1984,6 +1984,25 @@ def test_r16h_control_percent_with_no_taint_reports_nothing() -> None:
             messages=[])
     '''
     assert "PCL001" not in _codes(source), _codes(source)
+
+def test_r16c_named_expression_carries_taint() -> None:
+    """`system=(s := f"...")` is one expression; the walrus is not a value
+    of its own, it is its target."""
+    source = '''
+        from datetime import datetime
+        client.messages.create(model="m", max_tokens=1,
+            system=(s := f"T {datetime.now()}\\n{STATIC_RULES}"),
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16c_named_expression_without_taint_reports_nothing() -> None:
+    source = '''
+        client.messages.create(model="m", max_tokens=1,
+            system=(s := STATIC_RULES),
+            messages=[])
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
     source = '''
         import time
         rid = int(time.time())
