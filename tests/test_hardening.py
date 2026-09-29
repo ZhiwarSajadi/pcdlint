@@ -1458,6 +1458,62 @@ def test_setup_sh_reports_failures_instead_of_masking_them() -> None:
     assert "if errorlevel 2" in bat, bat
 
 
+# --- R-24: non-LLM Python must stay completely quiet ---------------------
+
+def test_non_llm_python_produces_no_findings() -> None:
+    """The regression sweep: the standard library is ~700 files of code
+    that has nothing to do with an LLM, so it should report nothing,
+    crash on nothing, and fail to analyze nothing.
+
+    What this does and does not catch. It catches crashes and analysis
+    errors over real code (the R-01 class), and any false positive that
+    does not need an LLM sink to fire. It does *not* exercise the
+    name-heuristic false positives of R-04: the stdlib contains no call
+    shaped like an LLM sink, so `_reaches_prompt` is never reached by the
+    name path here. Measured rather than assumed -- reverting R-04's gate
+    leaves this sweep green. Those are pinned by their own tests instead
+    (test_r04_*), which is the other half of what R-02..R-07 asked for.
+
+    site-packages was measured as an alternative corpus: 10,091 files in
+    312 seconds, with 4 PCL002 reports in litellm and headroom that are
+    prompt payloads rather than false positives. Too slow to run per
+    commit and not clean, so the stdlib is the corpus.
+
+    Deterministic every-Nth sample: the whole stdlib is ~29s, which would
+    dominate a suite that otherwise runs in 7. The sample is the same set
+    on every run and on every interpreter in the CI matrix.
+    """
+    import pathlib
+    import sysconfig
+
+    from pcdlint.analyzer import analyze_path_ex
+
+    root = pathlib.Path(sysconfig.get_paths()["stdlib"])
+    if not root.is_dir():
+        pytest.skip("this interpreter has no stdlib directory")
+    skip = {"site-packages", "__pycache__", "test", "tests"}
+    files = sorted(p for p in root.rglob("*.py")
+                   if not (set(p.parts) & skip))
+    assert len(files) >= 100, f"corpus too small to be worth sweeping: {len(files)}"
+    step = max(1, len(files) // 100)
+
+    problems: list[str] = []
+    for path in files[::step]:
+        try:
+            diagnostics, error = analyze_path_ex(path)
+        except Exception as exc:  # noqa: BLE001 -- a crash is the finding
+            problems.append(f"{path}: CRASH {type(exc).__name__}: {exc}")
+            continue
+        if error:
+            problems.append(f"{path}: {error}")
+        problems.extend(f"{path}: {d.rule_id} {d.message}" for d in diagnostics)
+
+    assert not problems, (
+        f"{len(problems)} problem(s) on non-LLM Python:\n"
+        + "\n".join(problems[:20])
+    )
+
+
 # --- R-01: an internal error must never look like a finding --------------
 
 def test_r01_deep_concatenation_is_analyzed_not_crashed() -> None:

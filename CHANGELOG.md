@@ -100,6 +100,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Added the false-positive regression sweep: a deterministic sample of
+  ~100 standard-library files must produce zero findings, zero analysis
+  errors and zero crashes. The full stdlib (721 files) was measured clean
+  too; the sample keeps the suite at ~4s instead of ~30s. Its limits are
+  documented in the test rather than implied — the stdlib has no LLM sink,
+  so it guards crashes and sink-independent false positives, while the
+  R-02–R-07 repros (each already a permanent unit test with its controls)
+  carry the precision guarantee.
 - The setup scripts stop hiding failures. `setup.sh` ran
   `venv "$VENV_DIR" || echo "Using existing environment."`, so a failed
   virtualenv creation (the usual cause being a missing `python3-venv`)
