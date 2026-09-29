@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from pcdlint import __version__, config
-from pcdlint.analyzer import analyze_path_ex
+from pcdlint.analyzer import analyze_path_ex, detect_encoding
 from pcdlint.disables import source_lines
 from pcdlint.fixer import apply_edits
 from pcdlint.rules import KNOWN_RULE_IDS, RULE_SEVERITIES, RULE_SHORT_DESCRIPTIONS
@@ -95,8 +95,15 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
             errors.append(f"cannot re-read {path}: {exc}")
             continue
         try:
-            source = data.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
+            # The file's own encoding, not UTF-8: re-encoding a latin-1 file
+            # as UTF-8 turns one byte into two and leaves it contradicting
+            # the cookie it declares.
+            encoding, encoding_error = detect_encoding(data)
+            if encoding is None:
+                errors.append(f"cannot re-read {path}: {encoding_error}")
+                continue
+            source = data.decode(encoding)
+        except (UnicodeDecodeError, LookupError) as exc:
             errors.append(f"cannot re-read {path}: {exc}")
             continue
         fixed = apply_edits(source, edits)
@@ -113,8 +120,9 @@ def _apply_fixes(diagnostics: list) -> tuple[int, int, list[str]]:
                           f"file left unchanged")
             continue
         try:
-            bom = b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b""
-            path.write_bytes(bom + fixed.encode("utf-8"))
+            # ``utf-8-sig`` is what detect_encoding reports when a BOM was
+            # there, so encoding with it puts the BOM back on its own.
+            path.write_bytes(fixed.encode(encoding))
         except OSError as exc:
             errors.append(f"cannot write {path}: {exc}")
             continue

@@ -108,6 +108,16 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- A file declaring a non-UTF-8 encoding cookie is analyzed instead of
+  refused. `# -*- coding: latin-1 -*-` is legal Python and was rejected
+  with "cannot decode as UTF-8", so a project with such a file got exit 2
+  and no analysis at all. `_read_source` now asks `tokenize.detect_encoding`
+  — the same function CPython uses — so a BOM and a cookie are both
+  honored and CRLF still survives. `--fix` writes back in the file's own
+  encoding too: it used to re-encode every rewrite as UTF-8, turning one
+  latin-1 byte into two and leaving the file contradicting its own cookie.
+  A cookie naming a codec that does not exist still exits 2, with Python's
+  own "invalid or missing encoding declaration" where there is no cookie.
 - Nine nondeterministic calls are now recognised as taint sources:
   `secrets.choice`, `secrets.randbelow`, `random.randbytes`,
   `random.gauss`, `time.process_time`, `time.thread_time`,

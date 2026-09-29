@@ -1563,6 +1563,68 @@ def test_r18_unknown_config_key_names_every_valid_one(tmp_path) -> None:
         assert key in message, f"{key} missing from: {message}"
 
 
+# --- R-14: a PEP 263 cookie is a promise about the bytes -----------------
+
+_R14_BODY = (
+    "# -*- coding: latin-1 -*-\n"
+    "from datetime import datetime\n"
+    'system = f"{datetime.now()} " + "rule " * 100\n'
+    'client.messages.create(model="m", max_tokens=1, system=system,'
+    " messages=[])\n"
+    "# caf\xe9\n"          # byte 0xe9: legal latin-1, invalid UTF-8
+)
+
+def test_r14_non_utf8_coding_cookie_is_analyzed(tmp_path, monkeypatch,
+                                                capsys) -> None:
+    """A file declaring `# -*- coding: latin-1 -*-` used to exit 2 with
+    "cannot decode as UTF-8" -- Python reads it fine, so the linter must
+    too."""
+    (tmp_path / "latin.py").write_bytes(_R14_BODY.encode("latin-1"))
+    monkeypatch.chdir(tmp_path)
+
+    assert _run_cli("check", "latin.py") == 1
+    assert "cannot decode" not in capsys.readouterr().err
+
+def test_r14_unknown_coding_cookie_is_still_an_error(tmp_path, monkeypatch,
+                                                     capsys) -> None:
+    """The other direction: a cookie naming a codec that does not exist
+    cannot be honored, and that is a path we could not analyze -- exit 2,
+    not a clean run."""
+    body = "# coding: no-such-codec\nx = 1\n"
+    (tmp_path / "bogus.py").write_bytes(body.encode("utf-8"))
+    monkeypatch.chdir(tmp_path)
+
+    assert _run_cli("check", "bogus.py") == 2
+    assert capsys.readouterr().err.strip()
+
+def test_r14_fix_writes_back_in_the_files_own_encoding(tmp_path,
+                                                       monkeypatch) -> None:
+    """`--fix` used to re-encode every rewrite as UTF-8, turning one latin-1
+    byte into two and leaving a file that no longer matches its own cookie."""
+    body = (
+        "# -*- coding: latin-1 -*-\n"
+        "import json\n"
+        "# caf\xe9\n"
+        "payload = {\"b\": 1, \"a\": 2}\n"
+        "system = json.dumps(payload)\n"
+        'client.messages.create(model="m", max_tokens=1, system=system,'
+        " messages=[])\n"
+    )
+    target = tmp_path / "latin.py"
+    target.write_bytes(body.encode("latin-1"))
+    monkeypatch.chdir(tmp_path)
+
+    # 0, not 1: the one finding was the sort_keys this rewrites, so a
+    # clean re-analysis is what proves the fix landed.
+    assert _run_cli("check", "latin.py", "--fix") == 0
+
+    raw = target.read_bytes()
+    assert b"\xe9" in raw, "the latin-1 byte was re-encoded as UTF-8"
+    assert b"\xc3\xa9" not in raw, raw
+    assert b"sort_keys=True" in raw, "the fix was not applied"
+    assert raw.decode("latin-1").count("sort_keys=True") == 1
+
+
 # --- R-24: non-LLM Python must stay completely quiet ---------------------
 
 def test_non_llm_python_produces_no_findings() -> None:

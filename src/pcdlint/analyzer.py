@@ -1,7 +1,9 @@
 """Code analyzer that scans Python files and produces diagnostics."""
 
 import ast
+import io
 import os
+import tokenize
 import warnings
 from fnmatch import fnmatch
 from pathlib import Path
@@ -322,22 +324,54 @@ def analyze_code(source_code: str, file_path: str = "") -> list[Diagnostic]:
     return diagnostics
 
 
-def _read_source(path: Path) -> tuple[str | None, str | None]:
-    """Read a source file as the bytes on disk, minus any UTF-8 BOM.
+def detect_encoding(data: bytes) -> tuple[str | None, str | None]:
+    """Encoding a source file declares for itself: its BOM or PEP 263 cookie.
 
-    Going through bytes rather than ``Path.read_text`` fixes two silent
-    rejections at once: ``utf-8-sig`` drops the leading U+FEFF that
-    ``ast.parse`` rejects (editors do save BOM'd files), and no text-mode
-    translation means CRLF comes back as CRLF -- ast's ``col_offset`` has to
-    describe the bytes that are actually there, and --fix has to write back
+    Returns ``(encoding, error)``. The error covers the two ways a cookie
+    can be unusable: naming a codec Python does not have, or being
+    malformed. Python refuses to compile such a file, so accepting it here
+    would mean reporting it as analyzed when it cannot even be run.
+    """
+    try:
+        encoding, _token = tokenize.detect_encoding(io.BytesIO(data).readline)
+    except LookupError as exc:
+        return None, f"encoding problem: {exc}"
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        return None, str(exc)
+    return encoding, None
+
+
+def _read_source(path: Path) -> tuple[str | None, str | None]:
+    """Read a source file as the bytes on disk, in the encoding it declares.
+
+    Going through bytes rather than ``Path.read_text`` keeps three things
+    the text API would lose: a BOM (``utf-8-sig`` drops the leading U+FEFF
+    that ``ast.parse`` rejects, and ``detect_encoding`` reports that
+    spelling when one is present), a non-UTF-8 cookie -- a file that says
+    ``latin-1`` is legal Python and must not be refused -- and CRLF, since
+    no text-mode translation happens. ast's ``col_offset`` has to describe
+    the bytes that are actually there, and ``--fix`` has to write back
     exactly what it did not touch.
     """
     try:
-        return path.read_bytes().decode("utf-8-sig"), None
-    except UnicodeDecodeError as exc:
-        return None, f"cannot decode {path} as UTF-8: {exc}"
+        data = path.read_bytes()
     except OSError as exc:
         return None, f"cannot read {path}: {exc}"
+    encoding, error = detect_encoding(data)
+    if encoding is None:
+        # When there is no cookie, detect_encoding's complaint means the
+        # bytes are not UTF-8 -- so decoding them says which byte, which is
+        # what someone staring at the file needs. A cookie that names a
+        # codec we do not have has nothing more specific to say.
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return None, f"cannot decode {path} as UTF-8: {exc}"
+        return None, f"cannot decode {path}: {error}"
+    try:
+        return data.decode(encoding), None
+    except (UnicodeDecodeError, LookupError) as exc:
+        return None, f"cannot decode {path}: {exc}"
 
 
 def analyze_path_ex(target_path: Path, *,
