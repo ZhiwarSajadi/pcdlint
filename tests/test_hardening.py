@@ -1931,6 +1931,34 @@ def test_r15_without_any_cache_control_reports_nothing() -> None:
 # Each sub-item pairs a construct that is missed with a simpler control
 # that is caught, so a failure names the construct rather than the harness.
 
+def test_r16b_tuple_unpacking_carries_taint() -> None:
+    """`system, user = f"...", "hi"` bound the taint to nothing: only plain
+    `ast.Name` targets were tracked, so a tuple target was skipped whole."""
+    source = '''
+        from datetime import datetime
+        system, user = f"T {datetime.now()}\\n{STATIC_RULES}", "hi"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[{"role": "user", "content": user}])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16b_list_unpacking_carries_taint() -> None:
+    source = '''
+        from datetime import datetime
+        [system, user] = [f"T {datetime.now()}\\n{STATIC_RULES}", "hi"]
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[{"role": "user", "content": user}])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16b_control_static_unpacking_reports_nothing() -> None:
+    source = '''
+        system, user = STATIC_RULES, "hi"
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[{"role": "user", "content": user}])
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
+
 def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     source = '''
         import asyncio

@@ -145,6 +145,27 @@ def _static_str_len(node: ast.AST) -> int | None:
     return measured.get(id(node))
 
 
+def _assign_pairs(target: ast.expr, value: ast.AST | None,
+                  out: list[tuple[str, ast.AST]]) -> None:
+    """Pair each assignment target with the expression that binds it.
+
+    A Name takes the whole right-hand side. A Tuple/List target pairs
+    element-wise with a Tuple/List value of the same length; anything else
+    -- a call that returns a pair, a star-unpack, a length mismatch -- is
+    not something this can see through, and guessing would bind the wrong
+    expression to the wrong name.
+    """
+    if isinstance(target, ast.Name):
+        if value is not None:
+            out.append((target.id, value))
+        return
+    if (isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)):
+        for element, item in zip(target.elts, value.elts):
+            _assign_pairs(element, item, out)
+
+
 def _has_sort_keys(node: ast.Call) -> bool:
     """True when a json.dumps call passes the literal ``sort_keys=True``."""
     for kw in node.keywords:
@@ -899,24 +920,19 @@ class TaintTracker:
 
     def track_assignment(self, node: ast.AST) -> None:
         """Analyze an assignment statement (Assign or AnnAssign) and update states."""
-        targets: list[str] = []
-        value = None
+        pairs: list[tuple[str, ast.AST]] = []
         if isinstance(node, ast.Assign):
             for t in node.targets:
-                if isinstance(t, ast.Name):
-                    targets.append(t.id)
-            value = node.value
+                _assign_pairs(t, node.value, pairs)
         elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name):
-                targets.append(node.target.id)
-            value = node.value
+            _assign_pairs(node.target, node.value, pairs)
 
-        if not value or not targets:
+        if not pairs:
             return
 
         scope = self.scope_of(node)
         in_branch = self.in_branch(node)
-        for var_name in targets:
+        for var_name, value in pairs:
             # Evaluate the RHS against live state (it may read the name it rebinds),
             # then strong-update that name's bindings.
             buf = _Bindings()

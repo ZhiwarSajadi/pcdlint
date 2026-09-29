@@ -102,6 +102,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 - **Taint propagation (R-16).** Constructs that carried a dynamic value into
   a prompt without being reported now are:
+  - `system, user = f"...{datetime.now()}...", "hi"` — only plain `ast.Name`
+    targets were tracked, so a tuple/list target was skipped whole and
+    bound nothing. Targets now pair element-wise with a Tuple/List value of
+    the same length; anything else still binds nothing rather than
+    guessing which expression belongs to which name.
   - `system = await build()` — `ast.Await` was not unwrapped, so nothing
     behind an `await` could be seen.
   - `rid = int(time.time() * 1000)` and `-tainted` — only `+` was looked
