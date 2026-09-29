@@ -100,6 +100,17 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Text already bound to a name now counts as text that comes *before* a
+  later `+=`. `prompt = STATIC_RULES` followed by
+  `prompt += f"\nTime: {datetime.now()}"` is the ordering this README
+  recommends, but the augmented assignment only ever looked at its own
+  right-hand side: with no static solid in it, Rule 3 fired inside the
+  first 500 characters and reported `PCL001`. The same happened to
+  `prompt = prompt + f"..."`. Bindings now record how much static text they
+  open with, so a lowercase name earns solid status once it actually holds
+  `STATIC_SOLID_MIN_CHARS` of it. The measurement is deliberately not a
+  verdict about shouty names: `SYSTEM_PROMPT = "head: "` is still six
+  characters, and taint appended to it is still reported.
 - An internal analyzer fault no longer looks like a finding. A left-nested
   concatenation of 1,000 or more terms parses fine, but overflowed the stack
   in `taint.py` and escaped `main()` as exit 1 -- which the contract reserves

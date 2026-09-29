@@ -223,6 +223,7 @@ class _Bindings:
         "set_orderable",
         "sets",
         "static",
+        "static_len",
         "strings",
         "tainted",
         "tools_mutated",
@@ -233,6 +234,11 @@ class _Bindings:
         self.prefix_tainted: dict[Key, TaintOrigin] = {}
         self.sets: set[Key] = set()
         self.static: dict[Key, str] = {}
+        # Characters of static text known to be bound to the name, whether or
+        # not it is shouty. This is what lets ``prompt = STATIC; prompt +=
+        # f"{now}"`` be seen as taint *after* a solid prefix rather than
+        # taint at the start of one.
+        self.static_len: dict[Key, int] = {}
         self.tools_mutated: set[Key] = set()
         self.branch: set[Key] = set()
         self.json_unsorted: set[Key] = set()
@@ -251,6 +257,7 @@ class _Bindings:
         self.prefix_tainted.update(other.prefix_tainted)
         self.sets.update(other.sets)
         self.static.update(other.static)
+        self.static_len.update(other.static_len)
         self.tools_mutated.update(other.tools_mutated)
         self.branch.update(other.branch)
         self.json_unsorted.update(other.json_unsorted)
@@ -268,6 +275,7 @@ class _Bindings:
         clone.prefix_tainted = dict(self.prefix_tainted)
         clone.sets = set(self.sets)
         clone.static = dict(self.static)
+        clone.static_len = dict(self.static_len)
         clone.tools_mutated = set(self.tools_mutated)
         clone.branch = set(self.branch)
         clone.json_unsorted = set(self.json_unsorted)
@@ -316,6 +324,9 @@ class _Bindings:
         for key in list(self.static):
             if other.static.get(key) != self.static[key]:
                 del self.static[key]
+        for key in list(self.static_len):
+            if other.static_len.get(key) != self.static_len[key]:
+                del self.static_len[key]
 
         # Structural bindings are a resolution aid, not a claim: keep the one
         # that exists, preferring this path when both arms bound the name.
@@ -333,7 +344,7 @@ class _Bindings:
     def clear_key(self, key: Key) -> None:
         """Drop every binding for one name (strong update on reassignment)."""
         for store in (self.tainted, self.prefix_tainted, self.static,
-                      self.json_flows, self.lists, self.dicts):
+                      self.static_len, self.json_flows, self.lists, self.dicts):
             store.pop(key, None)
         # Separate name: these are sets, and the dict stores above would
         # otherwise drive mypy's inference for both loops.
@@ -658,8 +669,50 @@ class TaintTracker:
             # Only a value we watched get bound counts. Shouty case on its own
             # says nothing: ``GREETING = input(...)`` is uppercase and dynamic,
             # and calling it static mutes every taint sitting after it.
-            return bool(self._get(self._b.static, node.id, node))
+            if self._get(self._b.static, node.id, node):
+                return True
+            # A lowercase name earns the same trust, but only once enough
+            # static text is actually bound to it: ``greeting = "hi"`` must
+            # not mute the taint that follows it, while a 500-character rules
+            # block assigned to ``prompt`` must.
+            return self.known_static_len(node.id, node) >= STATIC_SOLID_MIN_CHARS
         return False
+
+    def known_static_len(self, name: str, node: ast.AST | None = None) -> int:
+        """Characters of static text known to be bound to ``name`` (0 if unknown).
+
+        Deliberately a measurement, not a verdict: ``STATIC_PREFIX_NAMES``
+        members are solids by name for ``is_static_prefix_solid``, but
+        ``SYSTEM_PROMPT = "head: "`` is six characters of static text, and
+        six characters must not mute the taint appended to it.
+        """
+        return self._get(self._b.static_len, name, node) or 0
+
+    def _leading_static_len(self, parts: list[ast.AST]) -> int:
+        """Statically known characters before the first dynamic part.
+
+        Stops at the first part that is neither a static literal nor a name
+        bound to static text: anything past an unknown part cannot be shown
+        to sit after static content, and guessing would mute real taint.
+        """
+        total = 0
+        for part in parts:
+            if isinstance(part, ast.FormattedValue):
+                part = part.value
+            if self.get_taint_origin_of_node(part):
+                break
+            length = _static_str_len(part)
+            if length is not None:
+                total += length
+                continue
+            if isinstance(part, ast.Name):
+                known = self.known_static_len(part.id, part)
+                if not known:
+                    break
+                total += known
+                continue
+            break
+        return total
 
     def _flatten_string_expr(self, node: ast.AST) -> list[ast.AST]:
         """Flatten nested BinOp(op=Add) and JoinedStr into an ordered list of part nodes.
@@ -739,7 +792,8 @@ class TaintTracker:
             return None
         return None
 
-    def check_sequence_prefix_taint(self, parts: list[ast.AST]) -> TaintOrigin | None:
+    def check_sequence_prefix_taint(self, parts: list[ast.AST],
+                                    preceding_chars: int = 0) -> TaintOrigin | None:
         """Determine if a sequence of string parts contains prefix taint.
 
         Rules:
@@ -748,6 +802,11 @@ class TaintTracker:
           subsequent static solid), it is NOT prefix-tainted (cache prefix is preserved).
         - If there is NO static prefix solid, but a tainted expression appears at index 0 or
           within the first 500 characters of static text, it is PREFIX_TAINTED.
+
+        ``preceding_chars`` is static text already bound to the name this
+        expression is being appended to -- text that is in the string but not
+        in ``parts``, because the augmented assignment's target is not one of
+        its operands.
         """
         first_taint_idx = -1
         first_taint_origin: TaintOrigin | None = None
@@ -770,6 +829,11 @@ class TaintTracker:
         if first_taint_idx == -1 or first_taint_origin is None:
             return None
 
+        # A solid bound before this expression is a solid at index -1: it
+        # precedes every part, so taint anywhere here follows static text.
+        if preceding_chars >= STATIC_SOLID_MIN_CHARS:
+            return None
+
         # Rule 1: Taint appears BEFORE any static solid
         for solid_idx in static_solid_indices:
             if solid_idx > first_taint_idx:
@@ -780,7 +844,8 @@ class TaintTracker:
             return None
 
         # Rule 3: No static solid, taint within first 500 characters of static text
-        if not static_solid_indices and static_chars_before_first_taint < 500:
+        if not static_solid_indices \
+                and static_chars_before_first_taint + preceding_chars < 500:
             return first_taint_origin
 
         return None
@@ -838,6 +903,13 @@ class TaintTracker:
         scope = self.scope_of(node)
         key = (scope, var_name)
 
+        # Text the value already is, start to finish. Measured first because
+        # every branch below may strong-update the very name this expression
+        # reads, and this is the one answer that does not depend on order.
+        fully_static = _static_str_len(value)
+        if fully_static is not None:
+            buf.static_len[key] = fully_static
+
         # 0. Variable alias: e.g. b = a
         if isinstance(value, ast.Name):
             src = value.id
@@ -854,6 +926,7 @@ class TaintTracker:
             static = self._get(self._b.static, src, value)
             if static:
                 buf.static[key] = static
+            buf.static_len[key] = self.known_static_len(src, value)
             if self._has(self._b.tools_mutated, src, value):
                 buf.tools_mutated.add(key)
             if self._has(self._b.branch, src, value):
@@ -943,6 +1016,9 @@ class TaintTracker:
         if _is_string_concat(value):
             buf.strings.add(key)
             parts = self._flatten_string_expr(value)
+            # How much static text this binding now opens with, so a later
+            # `prompt += ...` on the same name is judged against it.
+            buf.static_len[key] = self._leading_static_len(parts)
             origin = self.check_sequence_prefix_taint(parts)
             if origin:
                 buf.tainted[key] = origin
@@ -1069,11 +1145,23 @@ class TaintTracker:
                 self._b.branch.add(key)
             if _is_string_concat(node.value):
                 parts = self._flatten_string_expr(node.value)
-                origin = self.check_sequence_prefix_taint(parts)
+                # The target is not an operand of its own `+=`, so what it
+                # already holds has to be handed over as text that comes
+                # before these parts.
+                preceding = self.known_static_len(node.target.id, node)
+                origin = self.check_sequence_prefix_taint(parts, preceding)
                 if origin:
                     self._b.tainted[key] = origin
                     self._b.prefix_tainted[key] = origin
                     self._label_origin(key, node.target.id)
+                elif not pass_no:
+                    # First pass only: `preceding` is read back on the next
+                    # one, so adding again there would grow the count with
+                    # every pass. A plain assignment to the same name re-runs
+                    # each pass and re-establishes the base anyway.
+                    self._b.static_len[key] = (
+                        preceding + self._leading_static_len(parts)
+                    )
             if pass_no:
                 # Growing the list is not idempotent: running it on every
                 # pass would append the elements once per pass.

@@ -1430,3 +1430,52 @@ def test_r01_internal_error_exits_2_and_names_the_file(
     assert "Traceback" not in captured.err, captured.err
     assert target.name in captured.err, captured.err
     assert "ValueError" in captured.err, captured.err
+
+
+# --- R-02: text already bound to the name is preceding text --------------
+
+def test_r02_aug_assign_after_static_prefix_is_clean() -> None:
+    """`prompt = STATIC; prompt += f"{taint}"` is the README's good ordering."""
+    source = '''
+        from datetime import datetime
+        STATIC_RULES = "rule " * 100
+        prompt = STATIC_RULES
+        prompt += f"\\nTime: {datetime.now()}"
+        client.chat.completions.create(model="m",
+            messages=[{"role": "system", "content": prompt}])
+    '''
+    assert _codes(source) == []
+
+def test_r02_reassign_after_static_prefix_is_clean() -> None:
+    """`prompt = prompt + f"{taint}"` puts the dynamic value last too."""
+    source = '''
+        from datetime import datetime
+        prompt = "rule " * 100
+        prompt = prompt + f"\\nTime: {datetime.now()}"
+        client.chat.completions.create(model="m",
+            messages=[{"role": "system", "content": prompt}])
+    '''
+    assert _codes(source) == []
+
+def test_r02_taint_first_still_flagged() -> None:
+    """Taint bound before the static block must still be reported."""
+    source = '''
+        from datetime import datetime
+        prompt = f"{datetime.now()}\\n"
+        prompt += STATIC_RULES
+        client.chat.completions.create(model="m",
+            messages=[{"role": "system", "content": prompt}])
+    '''
+    assert _codes(source) == ["PCL001"]
+
+def test_r02_taint_before_static_on_reassign_still_flagged() -> None:
+    """Same, through `prompt = f"...{taint}..." + prompt`."""
+    source = '''
+        from datetime import datetime
+        STATIC_RULES = "rule " * 100
+        prompt = STATIC_RULES
+        prompt = f"{datetime.now()}\\n" + prompt
+        client.chat.completions.create(model="m",
+            messages=[{"role": "system", "content": prompt}])
+    '''
+    assert _codes(source) == ["PCL001"]
