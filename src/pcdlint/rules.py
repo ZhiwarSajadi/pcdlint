@@ -446,11 +446,18 @@ class RuleEngine:
             if resolved and self._has_cache_control(resolved):
                 last_cache_idx = idx
 
+        # With a separate system=/instructions= argument the string does not
+        # start at messages[0]: that message is the first *turn*, and the
+        # README tells users to put dynamic values there. Without one it is
+        # the whole prompt, so it is the prefix.
+        separate_system = self._get_system_arg(node) is not None
+
         for idx, msg_node in enumerate(msg_elts):
             resolved_dict = self._resolve_dict_node(msg_node)
             if not resolved_dict:
                 continue
-            is_prefix = (self._is_system_message(resolved_dict) or idx == 0
+            is_prefix = ((idx == 0 and not separate_system)
+                         or self._is_system_message(resolved_dict)
                          or self._has_cache_control(resolved_dict)
                          or (last_cache_idx != -1 and idx <= last_cache_idx))
             if not is_prefix:

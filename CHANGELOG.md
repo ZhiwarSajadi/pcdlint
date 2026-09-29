@@ -100,6 +100,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- A dynamic first *user* message is no longer reported when the call has a
+  separate `system=`/`instructions=` argument. Anthropic keeps the system
+  prompt out of `messages`, so `messages[0]` is the first turn rather than
+  the start of the string -- and the README tells users to move dynamic
+  values there, which made the tool contradict its own advice. `messages[0]`
+  is treated as the prefix only when no such argument is present, when its
+  role is `system`/`developer`, or when it carries `cache_control` (a
+  breakpoint, where the rule is unchanged).
 - Text already bound to a name now counts as text that comes *before* a
   later `+=`. `prompt = STATIC_RULES` followed by
   `prompt += f"\nTime: {datetime.now()}"` is the ordering this README

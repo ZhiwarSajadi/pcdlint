@@ -1479,3 +1479,49 @@ def test_r02_taint_before_static_on_reassign_still_flagged() -> None:
             messages=[{"role": "system", "content": prompt}])
     '''
     assert _codes(source) == ["PCL001"]
+
+
+# --- R-03: messages[0] is a user turn when system= is separate -----------
+
+def test_r03_static_system_kwarg_dynamic_first_user_message_is_clean() -> None:
+    """Anthropic puts the system prompt in its own argument, so messages[0]
+    comes *after* it -- and the README says to move dynamic values there."""
+    source = '''
+        from datetime import datetime
+        client.messages.create(model="m", max_tokens=1, system=STATIC_RULES,
+            messages=[{"role": "user",
+                       "content": f"Now: {datetime.now()}. Question?"}])
+    '''
+    assert _codes(source) == []
+
+def test_r03_user_message_in_variable_with_static_system_is_clean() -> None:
+    """Same, with the user message built into a variable first."""
+    source = '''
+        from datetime import datetime
+        question = f"Now: {datetime.now()}. Question?"
+        client.messages.create(model="m", max_tokens=1, system=STATIC_RULES,
+            messages=[{"role": "user", "content": question}])
+    '''
+    assert _codes(source) == []
+
+def test_r03_dynamic_user_first_without_system_still_flagged() -> None:
+    """No separate system argument: messages[0] *is* the prompt prefix."""
+    source = '''
+        from datetime import datetime
+        client.chat.completions.create(model="m",
+            messages=[{"role": "user",
+                       "content": f"{datetime.now()} " + STATIC_RULES}])
+    '''
+    assert _codes(source) == ["PCL001"]
+
+def test_r03_cache_control_keeps_the_first_message_a_prefix() -> None:
+    """A breakpoint on the message makes everything before it part of the
+    cached prefix, separate system= or not. PCL005 reports the same miss
+    from the breakpoint's side."""
+    source = '''
+        from datetime import datetime
+        client.messages.create(model="m", max_tokens=1, system=STATIC_RULES,
+            messages=[{"role": "user", "cache_control": {"type": "ephemeral"},
+                       "content": f"{datetime.now()} "}])
+    '''
+    assert _codes(source) == ["PCL001", "PCL005"]
