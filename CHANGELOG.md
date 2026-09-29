@@ -100,6 +100,18 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Stale statements corrected across the docs. PCL005 landed but several
+  places still said "the 4 rules": `CONTRIBUTING.md` listed PCL001–PCL004
+  as the public ids, `rules.py` (both packages) and `models.py` counted
+  four, and the `config.py` unknown-key error named only `select` and
+  `ignore` while `exclude` has been valid since 0.3.0. `CONTRIBUTING.md`
+  also still described the version as living in two places and the
+  publish workflow as checking `pyproject.toml`; it is single-sourced in
+  `pcdlint.__version__` and the workflow reads `__init__.py`. `CLAUDE.md`
+  called the tool "zero-dependency" while `rich` (and `tomli` on 3.10)
+  are runtime dependencies, and `dependabot.yml` said actions were pinned
+  "by major tag" when they are SHA-pinned. The rule-count wording is now
+  number-free so the next rule cannot make it stale again.
 - The README's GitHub Actions recipe uploaded SARIF only on runs that had
   no findings. `pcdlint check --format sarif > f` exits 1 when it reports
   anything, so the step failed and the job stopped before the upload --

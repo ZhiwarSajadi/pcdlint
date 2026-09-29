@@ -61,7 +61,7 @@ pcdlint check examples/demo_buggy.py   # Buggy case (triggers PCL001-PCL004)
 
 ## Architecture & Code Structure
 
-`pcdlint` is a zero-dependency static taint analyzer (relying on Python's built-in `ast` module, plus `rich` for terminal UI) that detects non-deterministic code patterns invalidating LLM Prompt Caching (OpenAI and Anthropic SDKs).
+`pcdlint` is a static taint analyzer built on Python's built-in `ast` module, with two runtime dependencies: `rich` for the terminal UI and `tomli`, the `tomllib` backport, on Python 3.10. It detects non-deterministic code patterns invalidating LLM Prompt Caching (OpenAI and Anthropic SDKs).
 
 ### Core Pipeline Flow
 

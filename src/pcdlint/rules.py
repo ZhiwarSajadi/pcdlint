@@ -1,4 +1,10 @@
-"""The 4 core detection rules for pcdlint."""
+"""The detection rules for pcdlint.
+
+Rule ids, severities and one-line descriptions live beside the engine in
+``KNOWN_RULE_IDS`` / ``RULE_SEVERITIES`` / ``RULE_SHORT_DESCRIPTIONS``.
+Counts are deliberately not written down anywhere: PCL005 made "the 4
+rules" stale in three files at once.
+"""
 
 import ast
 from collections.abc import Sequence
@@ -168,7 +174,7 @@ def _replace(node: ast.expr, text: str) -> TextEdit | None:
 
 
 class RuleEngine:
-    """Applies all 4 lint rules against analyzed code."""
+    """Applies every rule against analyzed code, in source order."""
 
     def __init__(self, tracker: TaintTracker) -> None:
         self.tracker = tracker

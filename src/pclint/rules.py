@@ -1,4 +1,4 @@
-"""The 4 core detection rules for pclint (alias to pcdlint.rules)."""
+"""The detection rules for pclint (alias to pcdlint.rules)."""
 
 from pcdlint.rules import RuleEngine
 

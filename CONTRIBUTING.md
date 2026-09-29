@@ -33,7 +33,7 @@ pcdlint check src/ tests/ --fail-on-warn
   splice correctly at byte offsets (`ast.col_offset` counts UTF-8 bytes).
   If the rewrite could change behaviour for a legal input, report the
   finding without edits instead.
-- PCL001–PCL004 are the public rule ids. Additions need an entry in
+- PCL001–PCL005 are the public rule ids. Additions need an entry in
   `KNOWN_RULE_IDS` and `RULE_SHORT_DESCRIPTIONS`, plus a row in the README
   table; selectors and `# pcdlint: disable` comments validate against them.
 
@@ -44,7 +44,8 @@ it is, not what the line does — the surrounding code already does that.
 
 ## Releases
 
-Version numbers live in two places: `pyproject.toml` and
-`src/pcdlint/__init__.py`. `tests/test_packaging.py` fails if they disagree.
-Publishing happens by tagging `vX.Y.Z`, which the publish workflow checks
-against `pyproject.toml` before uploading to PyPI.
+The version lives in one place: `pcdlint.__version__` in
+`src/pcdlint/__init__.py`, which `pyproject.toml` reads through
+`[tool.setuptools.dynamic]`. `tests/test_packaging.py` asserts there is
+still only one. Publishing happens by tagging `vX.Y.Z`, which the publish
+workflow checks against `src/pcdlint/__init__.py` before uploading to PyPI.

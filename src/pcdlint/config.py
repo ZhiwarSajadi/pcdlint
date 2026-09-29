@@ -6,6 +6,8 @@ every package its own rule set.
 
 A broken or surprising config is an error (exit 2), never a silent fallback
 to defaults: ``select = ["PCL999"]`` must not make the run look clean.
+
+The keys are ``select``, ``ignore`` and ``exclude``.
 """
 
 import sys
@@ -105,7 +107,7 @@ def _load(path: Path) -> tuple[Config | None, bool]:
     if unknown:
         raise ConfigError(
             f"unknown key(s) in [{_SECTION}] ({path}): {', '.join(unknown)}; "
-            f"expected select and ignore"
+            f"expected select, ignore or exclude"
         )
 
     select = _rule_ids(section["select"], "select", path) if "select" in section else None

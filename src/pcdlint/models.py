@@ -55,7 +55,7 @@ class Diagnostic:
     file_path: str
     lineno: int
     col_offset: int
-    rule_id: str  # PCL001 to PCL004
+    rule_id: str  # one of pcdlint.rules.KNOWN_RULE_IDS
     rule_name: str
     message: str
     fix_suggestion: str

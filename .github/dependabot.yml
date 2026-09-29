@@ -1,7 +1,9 @@
 version: 2
 updates:
   # The workflows pin actions/checkout, setup-python, codeql-action and
-  # pypa/gh-action-pypi-publish by major tag; these PRs keep them current.
+  # pypa/gh-action-pypi-publish to a commit SHA; these PRs keep the pins
+  # current, which is the only reason pinning costs nothing after the
+  # first time.
   - package-ecosystem: github-actions
     directory: /
     schedule:
