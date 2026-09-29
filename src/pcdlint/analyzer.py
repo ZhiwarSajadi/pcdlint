@@ -283,6 +283,16 @@ def analyze_code_ex(source_code: str, file_path: str = "", *,
         where = file_path or "<source>"
         line = f"line {exc.lineno}" if exc.lineno else "unknown line"
         return [], f"cannot parse {where}: {exc.msg} ({line})"
+    except RecursionError:
+        # The parser has its own depth limit, and it is not ours to raise:
+        # on 3.12 a 3,000-term concatenation overflows *inside*
+        # ast.parse, before any of the iterative walking runs. Same rule
+        # as below -- a path we could not analyze exits 2, never 1.
+        where = file_path or "<source>"
+        return [], f"cannot analyze {where}: expression nesting too deep"
+    except Exception as exc:  # noqa: BLE001 -- last line of defence
+        where = file_path or "<source>"
+        return [], f"internal error analyzing {where}: {type(exc).__name__}: {exc}"
 
     try:
         cfg = config.load_for(file_path)

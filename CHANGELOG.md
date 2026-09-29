@@ -117,6 +117,12 @@ All notable changes to pcdlint are documented here. The format follows
   files for no behavioural gain, and `mypy --strict` reports 59 errors,
   nearly all bare generics. CI runs `ruff check` and plain `mypy`, both
   clean.
+- A parser-level `RecursionError` is an exit 2, not a traceback. Caught by
+  running the matrix locally rather than assuming it: on 3.12 `ast.parse`
+  itself overflows building the tree for a 3,000-term concatenation (3.14
+  accepts the same file), and that exception escaped the guard, which only
+  covered the tracking passes — so the R-01 contract was still broken on
+  one interpreter in five. The parse is guarded the same way now.
 - `--diff` asks what *this* branch changed. It ran `git diff REF`, which
   compares the working tree with REF's tip — so once the base branch moved
   past the branch point, its edits read as changes here and a finding this
