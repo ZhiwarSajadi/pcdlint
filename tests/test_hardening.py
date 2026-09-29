@@ -1967,7 +1967,23 @@ def test_r16g_taint_survives_a_unary_operator() -> None:
     '''
     assert "PCL001" in _codes(source), _codes(source)
 
-def test_r16g_control_plain_conversion_still_reports() -> None:
+def test_r16h_taint_survives_percent_formatting() -> None:
+    """`"Time: %s\\n" % datetime.now()` is the old spelling of an f-string."""
+    source = '''
+        from datetime import datetime
+        system = "Time: %s\\n" % datetime.now() + STATIC_RULES
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16h_control_percent_with_no_taint_reports_nothing() -> None:
+    source = '''
+        system = "Time: %s\\n" % STATIC_RULES
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
     source = '''
         import time
         rid = int(time.time())
