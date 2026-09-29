@@ -42,6 +42,15 @@ pcdlint check src/ tests/ --fail-on-warn
 Ruff and mypy are the arbiters. Comments explain *why* something is the way
 it is, not what the line does — the surrounding code already does that.
 
+Two things are deliberately **not** enforced:
+
+- **`ruff format`.** It would rewrite 17 of the 27 files for no behavioural
+  gain, and the churn would drown every real change in a diff nobody could
+  review. `ruff check` plus the style above is the line.
+- **`mypy --strict`.** It reports 59 errors, nearly all bare `list`/`dict`
+  generics. Paying that down is a separate change from whatever you are
+  working on; CI runs plain `mypy`, which is clean.
+
 ## Releases
 
 The version lives in one place: `pcdlint.__version__` in

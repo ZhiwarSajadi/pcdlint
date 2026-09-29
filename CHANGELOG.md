@@ -108,6 +108,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `pcdlint.cli.main()` takes an optional `argv`, so the CLI can be driven
+  in process without patching `sys.argv`; the console scripts pass nothing
+  and behave exactly as before. `json` moved to module level in `cli.py`
+  instead of being imported inside the two printers.
+- `CONTRIBUTING.md` records two deliberate non-adoptions instead of
+  leaving them as an open question: `ruff format` would rewrite 17 of 27
+  files for no behavioural gain, and `mypy --strict` reports 59 errors,
+  nearly all bare generics. CI runs `ruff check` and plain `mypy`, both
+  clean.
 - `--diff` asks what *this* branch changed. It ran `git diff REF`, which
   compares the working tree with REF's tip — so once the base branch moved
   past the branch point, its edits read as changes here and a finding this

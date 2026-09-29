@@ -2,10 +2,12 @@
 
 import argparse
 import ast
+import json
 import os
 import subprocess
 import sys
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -256,7 +258,13 @@ def _filter_to_changed(diagnostics: list, ref: str) -> tuple[list, list[str]]:
     ], []
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the CLI and return its exit code.
+
+    ``argv`` is everything after the program name; None means sys.argv, so
+    the console scripts are unaffected while tests can drive ``main`` in
+    process without patching global state.
+    """
     # Ensure UTF-8 output encoding across platforms (prevent Windows charmap/cp1252
     # errors). sys.stdout is typed TextIO but may be a wrapper object at runtime, so
     # reconfigure() is probed duck-typed exactly as before.
@@ -324,7 +332,7 @@ def main() -> int:
     # Plain parse_args() rejects the second path: argparse stops matching the
     # `paths` positional once an option appears, and reports it as
     # "unrecognized arguments" -- exit 2 for a path it never even tried.
-    args = parser.parse_intermixed_args()
+    args = parser.parse_intermixed_args(argv)
 
     try:
         select = config.parse_rule_list(args.select, "--select") if args.select else None
@@ -414,7 +422,6 @@ def main() -> int:
 
 
 def _print_json(diagnostics: list) -> None:
-    import json
     data = []
     for d in diagnostics:
         data.append({
@@ -492,8 +499,6 @@ def _region(d, sources: dict) -> dict:
 
 
 def _print_sarif(diagnostics: list) -> None:
-    import json
-
     rules = [
         {
             "id": rule_id,

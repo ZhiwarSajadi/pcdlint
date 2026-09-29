@@ -1625,6 +1625,19 @@ def test_r14_fix_writes_back_in_the_files_own_encoding(tmp_path,
     assert raw.decode("latin-1").count("sort_keys=True") == 1
 
 
+# --- R-26: drive the CLI in process --------------------------------------
+
+def test_main_accepts_argv_without_touching_sys_argv() -> None:
+    """`main(argv)` makes the CLI callable from a test without patching
+    global state -- and proves it did not silently fall back to sys.argv."""
+    from pcdlint.cli import main
+
+    before = list(sys.argv)
+    assert main(["check", "examples/demo_good.py"]) == 0
+    assert main(["check", "examples/demo_buggy.py"]) == 1
+    assert list(sys.argv) == before
+
+
 # --- R-24: non-LLM Python must stay completely quiet ---------------------
 
 def test_non_llm_python_produces_no_findings() -> None:
