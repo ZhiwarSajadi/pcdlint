@@ -100,6 +100,11 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Text output no longer hard-wraps at 80 columns when stdout is not a TTY.
+  rich word-wraps a non-interactive console, which split
+  `path:line:col` across lines and broke grep, editors and GitHub problem
+  matchers — exactly the environment CI runs in. Finding lines are printed
+  with `soft_wrap=True` and stay on one line however long the path is.
 - A path may now follow an option:
   `pcdlint check first --fail-on-warn second` analyses both. argparse stops
   matching the `paths` positional at the first option, so `second` was

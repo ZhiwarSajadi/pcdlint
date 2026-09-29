@@ -1718,3 +1718,30 @@ def test_r08_paths_after_an_option_are_all_analyzed(tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert code == 1, out
     assert "one.py" in out and "two.py" in out, out
+
+
+# --- R-09: a finding must survive being piped ----------------------------
+
+def test_r09_a_long_path_is_not_wrapped_when_stdout_is_piped(tmp_path) -> None:
+    """rich hard-wraps at 80 columns when stdout is not a TTY, splitting
+    `path:line:col` across lines -- which breaks grep, editors and GitHub
+    problem matchers."""
+    import re
+    import subprocess
+    import sys as _sys
+
+    directory = tmp_path / ("d" * 40) / ("e" * 40)
+    directory.mkdir(parents=True)
+    target = directory / "module.py"
+    target.write_text(_R08_BUG, encoding="utf-8")
+
+    proc = subprocess.run(
+        [_sys.executable, "-m", "pcdlint.cli", "check", str(target)],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+
+    assert proc.returncode == 1, proc.stderr
+    finding = next(line for line in proc.stdout.splitlines()
+                   if "PCL001" in line)
+    assert str(target) in finding, finding
+    assert re.search(r":\d+:\d+\s", finding), finding

@@ -517,13 +517,19 @@ def _print_text(diagnostics: list) -> None:
         severity_color = "red" if d.severity == "ERROR" else "yellow"
         # escape(): a path or message is data, not markup. Without it a file
         # called `[bold]x.py` is parsed as a tag and never printed.
+        # soft_wrap: when stdout is not a TTY, rich word-wraps at 80 columns
+        # and splits `path:line:col` across lines, which breaks grep, editors
+        # and GitHub problem matchers. A finding line is machine-readable
+        # output; it must stay on one line however long the path is.
         console.print(
             f"[{severity_color}][{d.rule_id}] {d.rule_name}[/{severity_color}] "
             f"[bold]{escape(d.file_path)}:{d.lineno}:{d.col_offset}[/bold] "
-            f"- {escape(d.message)}"
+            f"- {escape(d.message)}",
+            soft_wrap=True,
         )
         console.print(
-            f"    [bold yellow]💡 Fix:[/bold yellow] {escape(d.fix_suggestion)}"
+            f"    [bold yellow]💡 Fix:[/bold yellow] {escape(d.fix_suggestion)}",
+            soft_wrap=True,
         )
         console.print()
     table = Table(title="Summary")
