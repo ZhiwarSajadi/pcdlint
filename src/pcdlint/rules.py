@@ -36,6 +36,30 @@ def _root_module(name: str) -> str:
     return name.split(".", 1)[0]
 
 
+def _is_deterministic_json(node: ast.AST) -> bool:
+    """True when serializing ``node`` has exactly one possible output.
+
+    Dict and list/tuple *literals* serialize in source order -- Python dicts
+    are insertion-ordered -- so their keys cannot drift between runs and
+    ``sort_keys`` is irrelevant. Everything assembled at runtime can: a name,
+    a call, a comprehension, and a ``**`` merge all depend on values the
+    analyzer cannot see. A set literal has no order to preserve in the first
+    place.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.Dict):
+        # ``**`` records None in `keys` and merges at runtime.
+        if any(key is None for key in node.keys):
+            return False
+        if not all(isinstance(key, ast.Constant) for key in node.keys):
+            return False
+        return all(_is_deterministic_json(value) for value in node.values)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return all(_is_deterministic_json(elt) for elt in node.elts)
+    return False
+
+
 def call_parts(node: ast.Call) -> list[str]:
     """Attribute chain of ``node.func``, outermost attribute first."""
     parts: list[str] = []
@@ -524,6 +548,12 @@ class RuleEngine:
             return
         if self._has_sort_keys_arg(node):
             return
+        payload = self._json_payload(node)
+        if payload is not None and _is_deterministic_json(payload):
+            # A literal serializes in source order every time, so sort_keys
+            # cannot change the output. With --fail-on-warn in the README's
+            # CI recipe this would be build-failing noise over correct code.
+            return
         if self._reaches_prompt(node):
             self._add(
                 lineno=node.lineno,
@@ -567,6 +597,17 @@ class RuleEngine:
         anchor = node.keywords[-1].value if node.keywords else node.args[-1]
         edit = _insert_after(anchor, ", sort_keys=True")
         return (edit,) if edit else ()
+
+    @staticmethod
+    def _json_payload(node: ast.Call) -> ast.expr | None:
+        """The value being serialized: first positional, or ``obj=``/``s=``."""
+        if node.args:
+            return node.args[0]
+        return next(
+            (kw.value for kw in node.keywords
+             if kw.arg in ("obj", "s") and kw.value is not None),
+            None,
+        )
 
     @staticmethod
     def _has_sort_keys_arg(node: ast.Call) -> bool:

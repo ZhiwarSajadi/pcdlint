@@ -143,7 +143,7 @@ def test_taint_through_join_of_fstring_list() -> None:
 def test_pcl002_flows_through_intermediate_var() -> None:
     source = '''
         import json
-        blob = json.dumps({"z": 1, "a": 2})
+        blob = json.dumps(records)
         SYSTEM_PROMPT = "head " * 50 + blob
         client.messages.create(model="m", system=SYSTEM_PROMPT)
     '''
@@ -153,7 +153,7 @@ def test_pcl002_flows_through_intermediate_var() -> None:
 def test_pcl002_ignores_dumps_that_never_reach_a_prompt() -> None:
     source = '''
         import json
-        cache = json.dumps({"a": 1})
+        cache = json.dumps(records)
         SYSTEM_PROMPT = "static instructions " * 20
         client.messages.create(model="m", system=SYSTEM_PROMPT)
     '''
@@ -675,7 +675,7 @@ def test_pcl002_reported_when_dumps_is_passed_inline_to_the_call() -> None:
     source = '''
         import json
         client.messages.create(model="m", messages=[
-            {"role": "user", "content": json.dumps({"b": 1, "a": 2})}])
+            {"role": "user", "content": json.dumps(records)}])
     '''
     assert _codes(source) == ["PCL002"]
 
@@ -685,7 +685,7 @@ def test_pcl002_sees_a_dumps_imported_by_name() -> None:
     so the provenance was recorded and then never reported."""
     source = '''
         from json import dumps
-        payload = dumps({"b": 1, "a": 2})
+        payload = dumps(records)
         client.messages.create(model="m", messages=[
             {"role": "user", "content": payload}])
     '''
@@ -695,7 +695,7 @@ def test_pcl002_sees_a_dumps_imported_by_name() -> None:
 def test_pcl002_still_silent_when_the_payload_never_reaches_a_prompt() -> None:
     source = '''
         import json
-        audit = json.dumps({"b": 1, "a": 2})
+        audit = json.dumps(records)
         print(audit)
     '''
     assert _codes(source) == []
@@ -705,7 +705,7 @@ def test_pcl002_sees_dumps_through_a_module_alias() -> None:
     """``import json as J`` spells the same non-determinism as ``json.dumps``."""
     source = '''
         import json as J
-        payload = J.dumps({"b": 1, "a": 2})
+        payload = J.dumps(records)
         client.messages.create(model="m", messages=[
             {"role": "user", "content": payload}])
     '''
@@ -1585,3 +1585,50 @@ def test_r05_sink_without_a_model_keyword_still_reports() -> None:
             messages=[{"role": "system", "content": f"Time: {datetime.now()}"}])
     '''
     assert _codes(source) == ["PCL001"]
+
+
+# --- R-06: a literal cannot have an unstable key order -------------------
+
+_R06_TAIL = '''
+        client.messages.create(model="m", max_tokens=1, system=system, messages=[])
+    '''
+
+def test_r06_literal_dict_is_not_reported() -> None:
+    """A dict literal is insertion-ordered: its order is the source order."""
+    source = '''
+        import json
+        system = STATIC_RULES + json.dumps({"b": 1, "a": 2})
+    ''' + _R06_TAIL
+    assert _codes(source) == []
+
+def test_r06_literal_list_is_not_reported() -> None:
+    """sort_keys does nothing to a list, so asking for it is meaningless."""
+    source = '''
+        import json
+        system = STATIC_RULES + json.dumps(["b", "a"])
+    ''' + _R06_TAIL
+    assert _codes(source) == []
+
+def test_r06_unknown_input_still_reported() -> None:
+    """A name's dict came from somewhere the analyzer cannot see."""
+    source = '''
+        import json
+        system = STATIC_RULES + json.dumps(some_var)
+    ''' + _R06_TAIL
+    assert _codes(source) == ["PCL002"]
+
+def test_r06_double_star_spread_still_reported() -> None:
+    """`**` merges at runtime, so the final order is not the source order."""
+    source = '''
+        import json
+        system = STATIC_RULES + json.dumps({**base, "a": 1})
+    ''' + _R06_TAIL
+    assert _codes(source) == ["PCL002"]
+
+def test_r06_comprehension_still_reported() -> None:
+    """A comprehension iterates something whose order is unknown."""
+    source = '''
+        import json
+        system = STATIC_RULES + json.dumps({k: v for k, v in rows})
+    ''' + _R06_TAIL
+    assert _codes(source) == ["PCL002"]

@@ -100,6 +100,13 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- `PCL002` no longer reports a `json.dumps()` of a literal. A dict literal
+  is insertion-ordered, so its output is the same every run and
+  `sort_keys=True` changes nothing; `sort_keys` is meaningless on a list
+  too. The README's CI recipe uses `--fail-on-warn`, so this was
+  build-failing noise over correct code. A name, a call, a comprehension,
+  a `**` merge and anything else assembled at runtime still reports, and a
+  set literal still has no order to preserve.
 - A sink now has to look like a completion, not just spell like one.
   `twilio.messages.create(body=", ".join(tags), ...)` is `.messages.create`
   like any Anthropic call and sent a text message, yet every node inside it

@@ -284,10 +284,13 @@ MIXED = (
     "from datetime import datetime\n"
     "client.messages.create(model='m', "
     "system=f'{datetime.now()} ' + 'STATIC RULES ' * 30, messages=[])\n"
-    "prompt = json.dumps({'b': 1, 'a': 2})\n"
+    "prompt = json.dumps(payload)\n"
 )
 
-MIXED_CHANGED = MIXED.replace("{'b': 1, 'a': 2}", "{'b': 1, 'a': 2, 'c': 3}")
+# The payload must stay an unknown value: since R-06 a dict literal
+# serializes in source order, so it is not reported and --fix would have
+# nothing to rewrite here.
+MIXED_CHANGED = MIXED.replace("json.dumps(payload)", "json.dumps(payload_v2)")
 
 
 def test_fix_with_diff_reports_only_the_changed_line(tmp_path, monkeypatch,
