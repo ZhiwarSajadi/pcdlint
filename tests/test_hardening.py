@@ -2060,6 +2060,44 @@ def test_r16a_attribute_bindings_do_not_leak_between_classes() -> None:
     '''
     assert _codes(source) == ["PCL001"], _codes(source)
 
+def test_r16d_tainted_argument_reaches_the_prompt_through_a_helper() -> None:
+    """`def build(ts): return f"...{ts}..."` called as `build(datetime.now())`.
+    The summary only recorded a *statically* known return origin, and a
+    parameter has none."""
+    source = '''
+        from datetime import datetime
+        def build(ts):
+            return f"Time: {ts}\\n{STATIC_RULES}"
+        system = build(datetime.now())
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16d_tainted_keyword_argument_reaches_the_prompt() -> None:
+    source = '''
+        from datetime import datetime
+        def build(ts):
+            return f"Time: {ts}\\n{STATIC_RULES}"
+        system = build(ts=datetime.now())
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16d_control_helper_that_ignores_its_argument_reports_nothing() -> None:
+    """Guards the other direction: passing a timestamp to a helper that
+    never uses it must not taint the result."""
+    source = '''
+        from datetime import datetime
+        def build(ts):
+            return f"Time: {STATIC_RULES}"
+        system = build(datetime.now())
+        client.messages.create(model="m", max_tokens=1, system=system,
+            messages=[])
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
+
 def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     source = '''
         import asyncio

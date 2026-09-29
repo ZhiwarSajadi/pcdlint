@@ -1,7 +1,7 @@
 """Static taint and prefix tracking engine for pcdlint."""
 
 import ast
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import TypeVar
@@ -862,6 +862,11 @@ class TaintTracker:
                 summary = self._get(self._func_summaries, node.func.id, node)
                 if summary and summary.origin:
                     return summary.origin
+                if summary:
+                    origin = self._summary_arg_origin(
+                        node, summary, self.get_taint_origin_of_node)
+                    if origin:
+                        return origin
             # Method call on tainted object: e.g. now.isoformat(), datetime.now().strftime(...)
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
@@ -1394,37 +1399,78 @@ class TaintTracker:
         closes one more link of a chain, in either declaration order.
         """
         returns: dict[Scope, list[ast.AST]] = {}
-        defs: dict[Scope, list[str]] = {}
+        defs: dict[Scope, list[tuple[str, tuple[str, ...]]]] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Return) and node.value is not None:
                 returns.setdefault(self.scope_of(node), []).append(node.value)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                defs.setdefault(self.scope_of(node), []).append(node.name)
+                args = node.args
+                params = tuple(a.arg for a in
+                               (*args.posonlyargs, *args.args, *args.kwonlyargs))
+                defs.setdefault(self.scope_of(node), []).append(
+                    (node.name, params))
 
         changed = False
-        for def_scope, names in defs.items():
-            for name in names:
+        for def_scope, entries in defs.items():
+            for name, params in entries:
                 summary = self._summarize_returns(
-                    returns.get(def_scope + (name,), ()))
+                    returns.get(def_scope + (name,), ()), params)
                 func_key = (def_scope, name)
                 if self._func_summaries.get(func_key) != summary:
                     self._func_summaries[func_key] = summary
                     changed = True
         return changed
 
-    def _summarize_returns(self, values: Iterable[ast.AST]) -> FuncSummary:
+    def _summarize_returns(self, values: Iterable[ast.AST],
+                           params: tuple[str, ...] = ()) -> FuncSummary:
         """Fold every ``return`` in one function into a single summary."""
         origin: TaintOrigin | None = None
         is_set = False
         flows: set[int] = set()
+        depends: set[int] = set()
         for value in values:
             if origin is None:
                 origin = self.get_taint_origin_of_node(value)
             if not is_set:
                 is_set = self._value_is_set(value)
             flows |= self._nondeterministic_nodes(value)
+            if params:
+                for sub in ast.walk(value):
+                    if isinstance(sub, ast.Name) and sub.id in params:
+                        depends.add(params.index(sub.id))
         return FuncSummary(origin=origin, is_set=is_set,
-                           json_flows=frozenset(flows))
+                           json_flows=frozenset(flows), arg_names=params,
+                           returns_params=frozenset(depends))
+
+    def _summary_arg_origin(self, node: ast.Call, summary: FuncSummary,
+                            resolve: Callable[[ast.AST], TaintOrigin | None]
+                            ) -> TaintOrigin | None:
+        """Taint the caller passed into a parameter the return expression reads.
+
+        The summary knows *which* parameters matter; only the call site can
+        say what was actually passed, positionally or by keyword.
+        ``resolve`` is whichever resolver is asking, so prefix and plain
+        taint stay in step here too.
+        """
+        if not summary.returns_params:
+            return None
+        for index in summary.returns_params:
+            name = (summary.arg_names[index]
+                    if index < len(summary.arg_names) else None)
+            value: ast.AST | None = None
+            if name is not None:
+                for kw in node.keywords:
+                    if kw.arg == name and kw.value is not None:
+                        value = kw.value
+                        break
+            if value is None and index < len(node.args):
+                value = node.args[index]
+            if value is None:
+                continue
+            origin = resolve(value)
+            if origin:
+                return origin
+        return None
 
     def _value_is_set(self, value: ast.AST) -> bool:
         if isinstance(value, (ast.Set, ast.SetComp)):
@@ -1542,6 +1588,11 @@ class TaintTracker:
                 summary = self._get(self._func_summaries, node.func.id, node)
                 if summary and summary.origin:
                     return summary.origin
+                if summary:
+                    origin = self._summary_arg_origin(
+                        node, summary, self.get_prefix_tainted)
+                    if origin:
+                        return origin
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
                 if caller_origin:

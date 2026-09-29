@@ -24,6 +24,12 @@ class FuncSummary:
     origin: TaintOrigin | None = None
     is_set: bool = False
     json_flows: frozenset[int] = frozenset()
+    # Which parameters the return expression reads, and the parameter list
+    # they index into. A helper's result depends on what its caller passed,
+    # and only the caller can say whether that was dynamic: `ts` has no
+    # origin of its own until `build(datetime.now())` supplies one.
+    arg_names: tuple[str, ...] = ()
+    returns_params: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)

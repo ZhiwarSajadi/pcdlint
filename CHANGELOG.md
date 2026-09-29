@@ -115,6 +115,13 @@ All notable changes to pcdlint are documented here. The format follows
     bound nothing. Targets now pair element-wise with a Tuple/List value of
     the same length; anything else still binds nothing rather than
     guessing which expression belongs to which name.
+  - `build(datetime.now())` where `def build(ts)` returns an f-string
+    containing `ts` — a function summary only recorded a *statically*
+    known return origin, and a parameter has none, so whatever the caller
+    passed was lost at the boundary. Summaries now record which parameters
+    the return expression reads, and the call site checks those arguments
+    positionally and by keyword. A helper that ignores its argument still
+    reports nothing.
   - `system = await build()` — `ast.Await` was not unwrapped, so nothing
     behind an `await` could be seen.
   - `rid = int(time.time() * 1000)` and `-tainted` — only `+` was looked
