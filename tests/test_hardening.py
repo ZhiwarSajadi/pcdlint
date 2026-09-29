@@ -1959,6 +1959,57 @@ def test_r16b_control_static_unpacking_reports_nothing() -> None:
     '''
     assert "PCL001" not in _codes(source), _codes(source)
 
+def _r16j_resolvers(expr: str):
+    """``(origin, prefix)`` both resolvers give for `_value = <expr>`."""
+    import ast as _ast
+
+    from pcdlint.analyzer import _track_tree
+    from pcdlint.taint import TaintTracker
+
+    tree = _ast.parse("from datetime import datetime\n"
+                      'ctx = {"t": datetime.now()}\n'
+                      + f"_value = {expr}\n")
+    tracker = TaintTracker()
+    tracker.build_scopes(tree)
+    _track_tree(tracker, tree)
+    value = tree.body[-1].value
+    return (tracker.get_taint_origin_of_node(value),
+            tracker.get_prefix_tainted(value))
+
+def test_r16j_inline_conditional_carries_taint() -> None:
+    """`system=(f"..." if flag else STATIC)` inline in the call."""
+    source = '''
+        from datetime import datetime
+        client.messages.create(model="m", max_tokens=1,
+            system=(f"T {datetime.now()}\\n{STATIC_RULES}" if flag
+                    else STATIC_RULES),
+            messages=[])
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16j_both_resolvers_handle_the_same_shapes() -> None:
+    """`get_prefix_tainted` and `get_taint_origin_of_node` answer the same
+    question and duplicate most of their dispatch. Whichever gains a branch
+    the other lacks silently drops findings -- which is exactly how an
+    inline conditional went unreported."""
+    shapes = [
+        'f"{datetime.now()}\\n{STATIC_RULES}"',
+        '(f"{datetime.now()}\\n{STATIC_RULES}" if flag else STATIC_RULES)',
+        '(s := f"{datetime.now()}\\n{STATIC_RULES}")',
+        'f"{datetime.now()}\\n" + STATIC_RULES',
+        'str(int(time.time() * 1000)) + STATIC_RULES',
+        '-int(time.time())',
+        '[f"{datetime.now()}"]',
+        '(f"{datetime.now()}", "hi")',
+        'ctx["t"] + STATIC_RULES',
+    ]
+    for expr in shapes:
+        origin, prefix = _r16j_resolvers(expr)
+        assert origin is not None, f"origin resolver missed {expr}"
+        assert prefix is not None, (
+            f"prefix resolver lost a shape the origin resolver handles: {expr}"
+        )
+
 def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     source = '''
         import asyncio

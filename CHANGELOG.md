@@ -115,6 +115,11 @@ All notable changes to pcdlint are documented here. The format follows
     `"Time: %s" % datetime.now()` spelling.
   - `system=(s := f"...")` — `ast.NamedExpr` was not unwrapped, so a walrus
     hid whatever it wrapped.
+  - `system=(f"..." if flag else STATIC_RULES)` inline in a call —
+    `get_prefix_tainted` had no `IfExp` branch while `get_taint_origin_of_node`
+    did, so the two disagreed on which expressions they understand. A new
+    test sweeps nine shapes through both and fails the moment one of them
+    gains a branch the other lacks.
   - `f"{ctx['t']}"` for `ctx = {"t": datetime.now()}` — `ast.Subscript` had
     no branch, so looking a value up by key lost it. A literal key against
     a literal dict resolves exactly, so `ctx['static']` in a dict that also

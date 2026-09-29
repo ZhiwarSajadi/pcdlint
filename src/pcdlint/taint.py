@@ -1459,6 +1459,15 @@ class TaintTracker:
         """Check if an AST expression is prefix-tainted and return its TaintOrigin."""
         if isinstance(node, (ast.Await, ast.NamedExpr)):
             return self.get_prefix_tainted(node.value)
+        if isinstance(node, ast.IfExp):
+            # Either arm can be the value that runs, so taint on one is
+            # taint. Kept in step with get_taint_origin_of_node, which has
+            # always had this branch -- see test_r16j_both_resolvers.
+            for arm in (node.body, node.orelse):
+                origin = self.get_prefix_tainted(arm)
+                if origin:
+                    return origin
+            return None
         if isinstance(node, ast.Subscript):
             return self._subscript_origin(node)
         if isinstance(node, ast.Name):
