@@ -281,7 +281,11 @@ def main() -> int:
     parser.add_argument(
         "--version", action="version", version=f"pcdlint {__version__}",
     )
-    args = parser.parse_args()
+    # Intermixed, so `check first --fail-on-warn second` analyses both.
+    # Plain parse_args() rejects the second path: argparse stops matching the
+    # `paths` positional once an option appears, and reports it as
+    # "unrecognized arguments" -- exit 2 for a path it never even tried.
+    args = parser.parse_intermixed_args()
 
     try:
         select = config.parse_rule_list(args.select, "--select") if args.select else None

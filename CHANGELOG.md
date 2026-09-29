@@ -100,6 +100,14 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- A path may now follow an option:
+  `pcdlint check first --fail-on-warn second` analyses both. argparse stops
+  matching the `paths` positional at the first option, so `second` was
+  rejected as "unrecognized arguments" -- exit 2, "a path could not be
+  analyzed", for a path it never tried. `main()` uses
+  `parse_intermixed_args()` now. The pre-existing ambiguity of
+  `--diff [REF]` is unchanged: a token written directly after `--diff` is
+  still read as its REF, and `--diff` at the end still means `HEAD`.
 - Tracking no longer edits the tree it was handed. `messages.append(...)`
   and `.extend()` grew the `ast.List` that `ast.parse` produced, and since
   control-flow snapshots and per-call snapshots are shallow copies, every

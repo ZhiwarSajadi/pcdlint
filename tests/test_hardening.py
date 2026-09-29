@@ -1692,3 +1692,29 @@ def test_r07_tracking_does_not_modify_the_parsed_tree() -> None:
     tracker.build_scopes(tree)
     _track_tree(tracker, tree)
     assert ast.dump(tree) == before
+
+
+# --- R-08: a path may follow an option ----------------------------------
+
+_R08_BUG = (
+    "from datetime import datetime\n"
+    "client.messages.create(model=\"m\", max_tokens=1,\n"
+    "    system=f\"{datetime.now()} \" + \"rule \" * 100, messages=[])\n"
+)
+
+def test_r08_paths_after_an_option_are_all_analyzed(tmp_path, monkeypatch,
+                                                    capsys) -> None:
+    """argparse does not interleave a `paths` positional with options by
+    default, so `check first --fail-on-warn second` rejected `second` and
+    exited 2 -- "a path could not be analyzed", for a path it never tried."""
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    (tmp_path / "first" / "one.py").write_text(_R08_BUG, encoding="utf-8")
+    (tmp_path / "second" / "two.py").write_text(_R08_BUG, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    code = _run_cli("check", "first", "--fail-on-warn", "second")
+
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "one.py" in out and "two.py" in out, out
