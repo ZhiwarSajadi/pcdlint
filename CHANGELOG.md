@@ -122,6 +122,12 @@ All notable changes to pcdlint are documented here. The format follows
     the return expression reads, and the call site checks those arguments
     positionally and by keyword. A helper that ignores its argument still
     reports nothing.
+  - `self.build()` — summaries were keyed and looked up only for a
+    bare-name callee, so a method never found the summary its own class
+    declared. Lookup goes through the class scope, and because `self` is
+    bound at the call site parameter positions shift by one for a bound
+    method. `returns_set` uses the same path, so PCL004 sees method-built
+    tool lists too. Two classes with the same method name stay separate.
   - `system = await build()` — `ast.Await` was not unwrapped, so nothing
     behind an `await` could be seen.
   - `rid = int(time.time() * 1000)` and `-tainted` — only `+` was looked

@@ -2098,6 +2098,72 @@ def test_r16d_control_helper_that_ignores_its_argument_reports_nothing() -> None
     '''
     assert "PCL001" not in _codes(source), _codes(source)
 
+def test_r16e_method_call_carries_taint() -> None:
+    """Summaries were keyed and looked up only for a bare-name callee, so
+    `self.build()` never found the one its own class declared."""
+    source = '''
+        from datetime import datetime
+        class PromptBuilder:
+            def build(self):
+                return f"Time: {datetime.now()}\\n{STATIC_RULES}"
+            def go(self):
+                system = self.build()
+                client.messages.create(model="m", max_tokens=1,
+                    system=system, messages=[])
+        PromptBuilder().go()
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16e_method_with_argument_carries_taint() -> None:
+    """`self` is bound at the call site, so parameter positions shift by
+    one for a method."""
+    source = '''
+        from datetime import datetime
+        class PromptBuilder:
+            def build(self, ts):
+                return f"Time: {ts}\\n{STATIC_RULES}"
+            def go(self):
+                system = self.build(datetime.now())
+                client.messages.create(model="m", max_tokens=1,
+                    system=system, messages=[])
+        PromptBuilder().go()
+    '''
+    assert "PCL001" in _codes(source), _codes(source)
+
+def test_r16e_control_static_method_reports_nothing() -> None:
+    source = '''
+        class PromptBuilder:
+            def build(self):
+                return STATIC_RULES
+            def go(self):
+                system = self.build()
+                client.messages.create(model="m", max_tokens=1,
+                    system=system, messages=[])
+        PromptBuilder().go()
+    '''
+    assert "PCL001" not in _codes(source), _codes(source)
+
+def test_r16e_method_summaries_do_not_leak_between_classes() -> None:
+    """Two classes, same method name, different answers."""
+    source = '''
+        from datetime import datetime
+        class Clean:
+            def build(self):
+                return STATIC_RULES
+            def go(self):
+                client.messages.create(model="m", max_tokens=1,
+                    system=self.build(), messages=[])
+        class Tainted:
+            def build(self):
+                return f"Time: {datetime.now()}\\n{STATIC_RULES}"
+            def go(self):
+                client.messages.create(model="m", max_tokens=1,
+                    system=self.build(), messages=[])
+        Clean().go()
+        Tainted().go()
+    '''
+    assert _codes(source) == ["PCL001"], _codes(source)
+
 def test_r16f_awaited_taint_reaches_the_prompt() -> None:
     source = '''
         import asyncio

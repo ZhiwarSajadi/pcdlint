@@ -857,16 +857,15 @@ class TaintTracker:
             origin = self.is_taint_source(node)
             if origin:
                 return origin
-            if isinstance(node.func, ast.Name):
-                # Result of a local function that returns tainted data.
-                summary = self._get(self._func_summaries, node.func.id, node)
-                if summary and summary.origin:
-                    return summary.origin
-                if summary:
-                    origin = self._summary_arg_origin(
-                        node, summary, self.get_taint_origin_of_node)
-                    if origin:
-                        return origin
+            # Result of a local function or method that returns tainted data.
+            summary, bound = self._callee_summary(node)
+            if summary and summary.origin:
+                return summary.origin
+            if summary:
+                origin = self._summary_arg_origin(
+                    node, summary, self.get_taint_origin_of_node, bound)
+                if origin:
+                    return origin
             # Method call on tainted object: e.g. now.isoformat(), datetime.now().strftime(...)
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
@@ -1442,9 +1441,28 @@ class TaintTracker:
                            json_flows=frozenset(flows), arg_names=params,
                            returns_params=frozenset(depends))
 
+    def _callee_summary(self, node: ast.Call) -> tuple[FuncSummary | None, bool]:
+        """The summary for ``f(...)`` or ``self.m(...)``, and whether ``self`` is bound.
+
+        Method summaries are filed under the ClassDef's scope -- that is
+        where ``build_function_returns`` keyed them -- so a bare name lookup
+        from inside a method would find nothing. The second half of the pair
+        says the callee is a bound method, which shifts every parameter
+        position: ``self`` is not an argument the caller writes.
+        """
+        func = node.func
+        if isinstance(func, ast.Name):
+            return self._get(self._func_summaries, func.id, node), False
+        if (isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "self"):
+            return (self._get(self._func_summaries, func.attr, node,
+                              self.class_scope_of(node)), True)
+        return None, False
+
     def _summary_arg_origin(self, node: ast.Call, summary: FuncSummary,
-                            resolve: Callable[[ast.AST], TaintOrigin | None]
-                            ) -> TaintOrigin | None:
+                            resolve: Callable[[ast.AST], TaintOrigin | None],
+                            bound: bool = False) -> TaintOrigin | None:
         """Taint the caller passed into a parameter the return expression reads.
 
         The summary knows *which* parameters matter; only the call site can
@@ -1454,6 +1472,7 @@ class TaintTracker:
         """
         if not summary.returns_params:
             return None
+        shift = 1 if bound and summary.arg_names[:1] == ("self",) else 0
         for index in summary.returns_params:
             name = (summary.arg_names[index]
                     if index < len(summary.arg_names) else None)
@@ -1463,8 +1482,9 @@ class TaintTracker:
                     if kw.arg == name and kw.value is not None:
                         value = kw.value
                         break
-            if value is None and index < len(node.args):
-                value = node.args[index]
+            positional = index - shift
+            if value is None and 0 <= positional < len(node.args):
+                value = node.args[positional]
             if value is None:
                 continue
             origin = resolve(value)
@@ -1483,9 +1503,9 @@ class TaintTracker:
 
     def returns_set(self, node: ast.AST) -> bool:
         """True when ``node`` is a call whose callee returns a set."""
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+        if not isinstance(node, ast.Call):
             return False
-        summary = self._get(self._func_summaries, node.func.id, node)
+        summary, _bound = self._callee_summary(node)
         return bool(summary and summary.is_set)
 
     # ------------------------------------------------------------------
@@ -1584,15 +1604,14 @@ class TaintTracker:
             origin = self.is_taint_source(node)
             if origin:
                 return origin
-            if isinstance(node.func, ast.Name):
-                summary = self._get(self._func_summaries, node.func.id, node)
-                if summary and summary.origin:
-                    return summary.origin
-                if summary:
-                    origin = self._summary_arg_origin(
-                        node, summary, self.get_prefix_tainted)
-                    if origin:
-                        return origin
+            summary, bound = self._callee_summary(node)
+            if summary and summary.origin:
+                return summary.origin
+            if summary:
+                origin = self._summary_arg_origin(
+                    node, summary, self.get_prefix_tainted, bound)
+                if origin:
+                    return origin
             if isinstance(node.func, ast.Attribute):
                 caller_origin = self.get_taint_origin_of_node(node.func.value)
                 if caller_origin:
