@@ -1814,3 +1814,66 @@ def test_r12_syntax_warnings_from_the_linted_file_do_not_reach_stderr(
     assert proc.returncode in (0, 1), proc.stderr
     assert "SyntaxWarning" not in proc.stderr, proc.stderr
     assert proc.stderr.strip() == "", proc.stderr
+
+
+# --- R-13: line numbers must be Python's, not str.splitlines()' ----------
+
+_R13_BASE = (
+    "import json\n"
+    "from datetime import datetime\n"
+    "# pcdlint: disable\n"
+    'client.messages.create(model="m", max_tokens=1,\n'
+    '    system=f"{datetime.now()} " + "rule " * 100, messages=[])\n'
+)
+
+def test_r13_suppression_survives_a_form_feed_earlier_in_the_file() -> None:
+    """`str.splitlines()` also breaks on form feed, \\v, \\x85, U+2028 and
+    U+2029. The tokenizer does not, so after one of those every marker below
+    it maps to the wrong line -- and a suppression moved is a suppression
+    that silently stops applying."""
+    plain = [d.rule_id for d in analyze_code(_R13_BASE, "case.py")]
+    shifted = [d.rule_id for d in analyze_code(
+        _R13_BASE.replace("import json", "import json\ns = 'a\x0cb'", 1),
+        "case.py",
+    )]
+    assert plain, "the fixture must report something for this to compare"
+    assert shifted == plain
+
+def test_r13_source_lines_match_python_line_numbering(tmp_path) -> None:
+    """SARIF's column conversion reads `lines[lineno - 1]`, so one extra
+    line in the split shifts every column below it onto the wrong line."""
+    from pcdlint.cli import _read_source_lines
+
+    target = tmp_path / "x.py"
+    target.write_bytes(b"import json\ns = 'a\x0cb'\n# tail\n")
+
+    assert _read_source_lines(str(target)) == (
+        "import json", "s = 'a\x0cb'", "# tail",
+    )
+
+def test_r13_sarif_columns_survive_a_form_feed_earlier_in_the_file(
+        tmp_path, monkeypatch, capsys) -> None:
+    """endColumn is measured against `lines[end_lineno - 1]`. One line too
+    many in the split points it at the line above, whose length decides the
+    column -- so a form feed two hundred lines earlier moves a column."""
+    import json
+
+    def region(shifted: bool) -> dict:
+        filler = "s = 'a\x0cb'" if shifted else "s = 'ab'"
+        (tmp_path / "case.py").write_text(
+            "import json\n"
+            + filler + "\n"
+            "from datetime import datetime\n"
+            "if True:\n"
+            '    client.messages.create(model="m", max_tokens=1, '
+            'system=f"{datetime.now()} " + "rule " * 100, messages=[])\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        assert _run_cli("check", "case.py", "--format", "sarif") == 1
+        payload = json.loads(capsys.readouterr().out)
+        loc = payload["runs"][0]["results"][0]["locations"][0]
+        return loc["physicalLocation"]["region"]
+
+    clean = region(False)
+    assert region(True) == clean

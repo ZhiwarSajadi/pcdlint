@@ -15,6 +15,7 @@ from rich.table import Table
 
 from pcdlint import __version__, config
 from pcdlint.analyzer import analyze_path_ex
+from pcdlint.disables import source_lines
 from pcdlint.fixer import apply_edits
 from pcdlint.rules import KNOWN_RULE_IDS, RULE_SEVERITIES, RULE_SHORT_DESCRIPTIONS
 
@@ -441,7 +442,8 @@ def _read_source_lines(file_path: str) -> tuple[str, ...] | None:
     except OSError:
         return None
     try:
-        return tuple(data.decode("utf-8-sig").splitlines())
+        # Python's line model, not str.splitlines(): see source_lines.
+        return tuple(source_lines(data.decode("utf-8-sig")))
     except UnicodeDecodeError:
         return None
 

@@ -100,6 +100,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- Line numbers are Python's now, not `str.splitlines()`'s. `splitlines()`
+  also breaks on form feed, `\v`, `\x1c`–`\x1e`, `\x85`, U+2028 and
+  U+2029; `ast` and `tokenize` do not. After any of those earlier in a file
+  every `# pcdlint: disable` below it was mapped to the wrong row — so a
+  suppression could silently stop applying — and SARIF's `endColumn`, which
+  is measured against `lines[end_lineno - 1]`, was read off the line above
+  (a measured 9 instead of 96 on the regression fixture). `disables.parse`
+  and the SARIF column reader now share one `source_lines()` helper that
+  folds `\r\n`/`\r`, matching what the tokenizer treats as a newline.
 - The linted file's own `SyntaxWarning`s no longer reach stderr. `ast.parse`
   warns about an invalid escape such as `re.compile("\d+")`, so an ordinary
   run printed a warning about the user's code that had nothing to do with

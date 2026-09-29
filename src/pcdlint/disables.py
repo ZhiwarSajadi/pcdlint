@@ -131,6 +131,25 @@ def _next_code_row(lines: list[str], row: int) -> int | None:
     return None
 
 
+def source_lines(source: str) -> list[str]:
+    """Lines of ``source`` as Python numbers them.
+
+    ``str.splitlines()`` also breaks on form feed, ``\\v``, ``\\x1c``-``\\x1e``,
+    ``\\x85``, U+2028 and U+2029. The tokenizer does not, so after any of
+    those earlier in a file every line below it -- and every row a
+    ``# pcdlint: disable`` maps to -- lands off by one. Only ``\\n`` ends a
+    line here; ``\\r\\n`` and a lone ``\\r`` are the same terminator to
+    ``ast`` and ``tokenize``, so they are folded to ``\\n`` first.
+
+    A file ending in a newline does not gain a line from it, which matters
+    where the result's length is compared against a row number.
+    """
+    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def parse(source: str) -> DisableSet:
     """Extract every disable comment from ``source``."""
     # Fast path: the overwhelming majority of files never mention pcdlint at
@@ -139,7 +158,7 @@ def parse(source: str) -> DisableSet:
     if "pcdlint" not in source:
         return DisableSet(frozenset(), {})
 
-    lines = source.splitlines()
+    lines = source_lines(source)
     file_rules: set[str] = set()
     line_rules: dict[int, set[str]] = {}
     try:
