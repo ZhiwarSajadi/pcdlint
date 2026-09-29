@@ -1384,3 +1384,49 @@ def test_every_workflow_action_is_pinned_to_a_commit_sha() -> None:
             pinned += 1
 
     assert pinned >= 8, f"expected the workflows' actions, found {pinned}"
+
+
+# --- R-01: an internal error must never look like a finding --------------
+
+def test_r01_deep_concatenation_is_analyzed_not_crashed() -> None:
+    """A left-nested ``+`` chain is legal Python, so analyzing it must work.
+
+    1,000 terms used to blow the stack in taint.py's recursive helpers and
+    escape as an uncaught ``RecursionError`` -> exit 1, which the exit-code
+    contract reserves for "findings".
+    """
+    from pcdlint.analyzer import analyze_code_ex
+
+    terms = " + ".join(['"a"'] * 3000)
+    source = (
+        'from datetime import datetime\n'
+        'STATIC_RULES = "rule " * 100\n'
+        f"x = {terms}\n"
+        'client.messages.create(model="m", max_tokens=1, system=x, messages=[])\n'
+    )
+    diagnostics, error = analyze_code_ex(source, "deep.py")
+    assert error is None, error
+    assert diagnostics == []
+
+def test_r01_internal_error_exits_2_and_names_the_file(
+    tmp_path, monkeypatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A rule raising is an analyzer fault: exit 2, one line, no traceback."""
+    from pcdlint import analyzer
+    from pcdlint.cli import main
+
+    target = tmp_path / "boom.py"
+    target.write_text('x = "a"\n', encoding="utf-8")
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("synthetic failure")
+
+    monkeypatch.setattr(analyzer.RuleEngine, "run", boom)
+    monkeypatch.setattr(sys, "argv", ["pcdlint", "check", str(target)])
+
+    assert main() == 2
+
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err, captured.err
+    assert target.name in captured.err, captured.err
+    assert "ValueError" in captured.err, captured.err

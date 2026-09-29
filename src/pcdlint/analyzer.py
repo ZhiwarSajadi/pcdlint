@@ -271,12 +271,22 @@ def analyze_code_ex(source_code: str, file_path: str = "", *,
     except config.ConfigError as exc:
         return [], str(exc)
 
-    tracker = TaintTracker()
-    tracker.build_scopes(tree)
-    _track_tree(tracker, tree)
+    try:
+        tracker = TaintTracker()
+        tracker.build_scopes(tree)
+        _track_tree(tracker, tree)
 
-    engine = RuleEngine(tracker)
-    found = engine.run(tree, file_path)
+        engine = RuleEngine(tracker)
+        found = engine.run(tree, file_path)
+    except RecursionError:
+        # Exit 1 means "findings", so a crash escaping as 1 would make CI
+        # treat an analyzer fault as a lint result. Depth past what we can
+        # walk is a path we could not analyze: exit 2.
+        where = file_path or "<source>"
+        return [], f"cannot analyze {where}: expression nesting too deep"
+    except Exception as exc:  # noqa: BLE001 -- last line of defence
+        where = file_path or "<source>"
+        return [], f"internal error analyzing {where}: {type(exc).__name__}: {exc}"
 
     # Single suppression point: rules never see disable comments or config.
     off = disables.parse(source_code)

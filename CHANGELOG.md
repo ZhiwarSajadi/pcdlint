@@ -100,6 +100,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- An internal analyzer fault no longer looks like a finding. A left-nested
+  concatenation of 1,000 or more terms parses fine, but overflowed the stack
+  in `taint.py` and escaped `main()` as exit 1 -- which the contract reserves
+  for "findings", so CI could not tell a crash from a lint failure. The `+`
+  walks in `_static_str_len` and `_flatten_string_expr` are iterative now:
+  their depth tracked operand count rather than nesting depth, while
+  `ast.parse` accepts either. Anything that still overflows, and any
+  unexpected exception, becomes a one-line error naming the file instead of a
+  traceback -- exit 2, never 1.
 - Rules now judge a call against the bindings it ran with, not the ones the
   file ended up with. Tracking covers the whole file before any rule sees
   it, so a name rebound *after* an LLM call made that call look clean:

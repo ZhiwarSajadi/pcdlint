@@ -99,25 +99,50 @@ def _static_str_len(node: ast.AST) -> int | None:
 
     Handles string constants plus concatenation and repetition
     (``"rules " * 30``), a common way to build long static prefixes.
+
+    The walk is explicit rather than recursive: ``a + a + a + ...`` nests
+    left, so its depth grows with operand count, and ``ast.parse`` accepts
+    concatenations far past what Python's own stack can hold. Post-order is
+    kept because ``*`` needs both operands measured before it can multiply.
     """
-    if isinstance(node, ast.Constant):
-        return len(node.value) if isinstance(node.value, str) else None
-    if isinstance(node, ast.BinOp):
-        if isinstance(node.op, ast.Add):
-            left = _static_str_len(node.left)
-            right = _static_str_len(node.right)
-            if left is None or right is None:
-                return None
-            return min(left + right, _MAX_STATIC_CHARS)
-        if isinstance(node.op, ast.Mult):
-            for base, count in ((node.left, node.right), (node.right, node.left)):
+    measured: dict[int, int | None] = {}
+    stack: list[tuple[ast.AST, bool]] = [(node, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if not expanded:
+            if isinstance(current, ast.Constant):
+                measured[id(current)] = (
+                    len(current.value) if isinstance(current.value, str) else None
+                )
+            elif isinstance(current, ast.BinOp) and isinstance(
+                current.op, (ast.Add, ast.Mult)
+            ):
+                stack.append((current, True))
+                stack.append((current.right, False))
+                stack.append((current.left, False))
+            else:
+                measured[id(current)] = None
+            continue
+        if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
+            left = measured[id(current.left)]
+            right = measured[id(current.right)]
+            measured[id(current)] = (
+                None if left is None or right is None
+                else min(left + right, _MAX_STATIC_CHARS)
+            )
+            continue
+        length = None
+        if isinstance(current, ast.BinOp):
+            for base, count in ((current.left, current.right),
+                                (current.right, current.left)):
                 if isinstance(count, ast.Constant) and isinstance(count.value, int) \
                         and not isinstance(count.value, bool):
-                    length = _static_str_len(base)
-                    if length is not None:
-                        return max(min(length * count.value, _MAX_STATIC_CHARS), 0)
-            return None
-    return None
+                    base_len = measured[id(base)]
+                    if base_len is not None:
+                        length = max(min(base_len * count.value, _MAX_STATIC_CHARS), 0)
+                        break
+        measured[id(current)] = length
+    return measured.get(id(node))
 
 
 def _has_sort_keys(node: ast.Call) -> bool:
@@ -637,18 +662,28 @@ class TaintTracker:
         return False
 
     def _flatten_string_expr(self, node: ast.AST) -> list[ast.AST]:
-        """Flatten nested BinOp(op=Add) and JoinedStr into an ordered list of part nodes."""
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return self._flatten_string_expr(node.left) + self._flatten_string_expr(node.right)
-        if isinstance(node, ast.JoinedStr):
-            parts: list[ast.AST] = []
-            for val in node.values:
-                if isinstance(val, ast.FormattedValue):
-                    parts.extend(self._flatten_string_expr(val.value))
-                else:
-                    parts.append(val)
-            return parts
-        return [node]
+        """Flatten nested BinOp(op=Add) and JoinedStr into an ordered list of part nodes.
+
+        Iterative for the same reason as ``_static_str_len``: ``+`` nests
+        left, so chain depth tracks operand count rather than nesting depth.
+        ``JoinedStr`` values are pushed back on rather than emitted directly
+        so a mixed ``f"{x}a{y}"`` keeps source order.
+        """
+        parts: list[ast.AST] = []
+        pending: list[ast.AST] = [node]
+        while pending:
+            current = pending.pop()
+            if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
+                pending.append(current.right)
+                pending.append(current.left)
+            elif isinstance(current, ast.JoinedStr):
+                for val in reversed(current.values):
+                    pending.append(
+                        val.value if isinstance(val, ast.FormattedValue) else val
+                    )
+            else:
+                parts.append(current)
+        return parts
 
     def get_taint_origin_of_node(self, node: ast.AST) -> TaintOrigin | None:
         """Resolve TaintOrigin from an AST node if it contains taint."""
