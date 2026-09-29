@@ -43,7 +43,15 @@ echo "[2/5] Setting up virtual environment..."
 VENV_DIR=".venv"
 if [ ! -d "$VENV_DIR" ]; then
     echo "  Creating virtual environment at $VENV_DIR..."
-    $PYTHON_BIN -m venv "$VENV_DIR" || echo "  Using existing environment."
+    if ! $PYTHON_BIN -m venv "$VENV_DIR"; then
+        # Silently continuing here would install into the system Python,
+        # which is the opposite of what the message claimed and often not
+        # even permitted. Debian/Ubuntu need `apt install python3-venv`.
+        echo "ERROR: could not create $VENV_DIR."
+        echo "       On Debian/Ubuntu this is usually 'apt install python3-venv'."
+        echo "       Continuing would install into your system Python instead."
+        exit 1
+    fi
 fi
 
 if [ -f "$VENV_DIR/bin/activate" ]; then
@@ -72,8 +80,19 @@ $PYTHON_BIN -m pcdlint.cli check examples/demo_good.py
 
 echo ""
 echo "--- Testing Buggy Case (demo_buggy.py) ---"
-# Expected to exit with code 1 due to violations
-$PYTHON_BIN -m pcdlint.cli check examples/demo_buggy.py || true
+# Expected to exit 1 (findings). Exit 0 means the demo stopped being buggy
+# and exit 2 means pcdlint could not analyze it at all -- a broken run must
+# never pass for the same reason a clean one must never fail.
+set +e
+$PYTHON_BIN -m pcdlint.cli check examples/demo_buggy.py
+DEMO_RC=$?
+set -e
+if [ "$DEMO_RC" -ne 1 ]; then
+    echo "ERROR: demo_buggy.py should exit 1 (findings); got $DEMO_RC."
+    echo "       0 means the demo no longer demonstrates the bugs,"
+    echo "       2 means pcdlint could not analyze it."
+    exit 1
+fi
 
 echo ""
 echo "=================================================="

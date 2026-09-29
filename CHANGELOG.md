@@ -100,6 +100,15 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- The setup scripts stop hiding failures. `setup.sh` ran
+  `venv "$VENV_DIR" || echo "Using existing environment."`, so a failed
+  virtualenv creation (the usual cause being a missing `python3-venv`)
+  printed a comforting message and then installed into the system Python.
+  It now explains the failure and exits. The buggy-demo check was
+  `|| true`, which swallowed exit 2 — "could not analyze" — alongside the
+  expected exit 1; it now requires exactly 1. `setup.bat` had the same
+  hole in the other direction: `if not errorlevel 1` accepts exit 2 as a
+  pass, so it checks for 2 explicitly first.
 - The demo files no longer pass `system=` to `chat.completions.create`,
   which has no such parameter — the system prompt belongs in `messages` as
   a system role, which is where the README's examples already put it. Both

@@ -1431,6 +1431,33 @@ def test_demos_pass_no_system_kwarg_to_an_openai_chat_call() -> None:
             )
 
 
+# --- R-23: setup.sh must not swallow a failure ---------------------------
+
+def test_setup_sh_reports_failures_instead_of_masking_them() -> None:
+    """`|| echo "Using existing environment."` on a failed `venv` printed a
+    comforting lie and then installed into the system Python;
+    `|| true` on the buggy demo swallowed exit 2 -- "could not analyze" --
+    as though it were the expected exit 1."""
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parents[1] / "setup.sh").read_text(
+        encoding="utf-8")
+    assert '|| echo "  Using existing environment."' not in script, script
+    assert "|| true" not in script, script
+    assert "-ne 1" in script, (
+        "the buggy demo must be required to exit exactly 1, not merely >= 1"
+    )
+    assert "python3-venv" in script, (
+        "say why venv creation failed rather than failing silently"
+    )
+
+    # setup.bat had the same hole: `if not errorlevel 1` accepts exit 2,
+    # so a run pcdlint could not perform counted as "reported violations".
+    bat = (Path(__file__).resolve().parents[1] / "setup.bat").read_text(
+        encoding="utf-8")
+    assert "if errorlevel 2" in bat, bat
+
+
 # --- R-01: an internal error must never look like a finding --------------
 
 def test_r01_deep_concatenation_is_analyzed_not_crashed() -> None:

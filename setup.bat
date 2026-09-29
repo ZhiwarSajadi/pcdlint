@@ -60,6 +60,14 @@ if errorlevel 1 (
 echo.
 echo --- Testing Buggy Case (demo_buggy.py) ---
 python -m pcdlint.cli check examples/demo_buggy.py
+REM Exit 1 means findings, which is what this demo is for. Exit 0 means it
+REM stopped demonstrating the bugs, and exit 2 means pcdlint could not
+REM analyze it -- a broken run must not pass for the same reason a clean
+REM one must not fail. `if not errorlevel 1` alone would accept 2.
+if errorlevel 2 (
+    echo ERROR: pcdlint could not analyze demo_buggy.py.
+    exit /b 1
+)
 if not errorlevel 1 (
     echo ERROR: demo_buggy.py should report violations and exit with code 1.
     exit /b 1
