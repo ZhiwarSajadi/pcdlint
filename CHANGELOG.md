@@ -100,6 +100,13 @@ All notable changes to pcdlint are documented here. The format follows
 
 ### Fixed
 
+- The demo files no longer pass `system=` to `chat.completions.create`,
+  which has no such parameter — the system prompt belongs in `messages` as
+  a system role, which is where the README's examples already put it. Both
+  demos are restructured the same way; `demo_good.py` still reports 0
+  findings and `demo_buggy.py` still reports PCL001–PCL004, so no test or
+  CI smoke assertion changed. A test parses both demos and fails if either
+  ever passes `system=` to a `chat.completions` call again.
 - Stale statements corrected across the docs. PCL005 landed but several
   places still said "the 4 rules": `CONTRIBUTING.md` listed PCL001–PCL004
   as the public ids, `rules.py` (both packages) and `models.py` counted

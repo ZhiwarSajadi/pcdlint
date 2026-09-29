@@ -1405,6 +1405,32 @@ def test_readme_sarif_recipe_survives_a_run_with_findings() -> None:
     assert "fetch-depth: 0" in readme, readme
 
 
+# --- R-22: the demos must use a real API ---------------------------------
+
+def test_demos_pass_no_system_kwarg_to_an_openai_chat_call() -> None:
+    """`chat.completions.create` has no `system` parameter -- the system
+    prompt belongs in `messages` as a system role. The README's examples
+    were corrected; the demos still passed it."""
+    import ast as _ast
+    from pathlib import Path
+
+    from pcdlint.rules import call_parts
+
+    root = Path(__file__).resolve().parents[1]
+    for name in ("demo_good.py", "demo_buggy.py"):
+        source = (root / "examples" / name).read_text(encoding="utf-8")
+        for node in _ast.walk(_ast.parse(source)):
+            if not isinstance(node, _ast.Call):
+                continue
+            if not {"chat", "completions"} <= set(call_parts(node)):
+                continue
+            kwargs = {kw.arg for kw in node.keywords}
+            assert "system" not in kwargs, (
+                f"{name}:{node.lineno} passes system= to "
+                "chat.completions.create"
+            )
+
+
 # --- R-01: an internal error must never look like a finding --------------
 
 def test_r01_deep_concatenation_is_analyzed_not_crashed() -> None:

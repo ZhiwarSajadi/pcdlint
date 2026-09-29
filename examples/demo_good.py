@@ -19,10 +19,9 @@ tools = [{"name": "tool1"}, {"name": "tool2"}]
 client = OpenAI()
 client.chat.completions.create(
     model="gpt-4",
-    system=system,
     messages=[
-        {"role": "system", "content": tags},
-        {"role": "user", "content": prompt},
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Tags: {tags}. Data: {prompt}"},
     ],
     tools=tools,
 )
