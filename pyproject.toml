@@ -60,7 +60,7 @@ dev = [
     "pytest-cov>=5.0",
     # Pinned because ruff's curated default rule set is version-dependent;
     # an explicit `select` would need all 413 default codes to reproduce it.
-    "ruff~=0.16.9",
+    "ruff>=0.16.9,<0.18.0",
     # Always installed so mypy can check the 3.10 tomllib fallback branch.
     "tomli>=2.0",
 ]
